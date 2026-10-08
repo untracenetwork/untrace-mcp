@@ -94,7 +94,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     { name: "untrace-mcp", version: VERSION },
     {
       instructions:
-        "Untrace Drive tools. This server acts as ONE developer key, which is a member of individual files (admin, editor or viewer), never a user. It only sees files it is a member of; a 404 means not found OR not a member. The owner of a file can never be changed or removed. Local paths are relative to the allowed folder (UNTRACE_MCP_ROOT). Credentials are set in the environment; never ask the user for the client secret in chat. Use untrace_setup_guide to help a developer add the Drive SDK to their own app.",
+        "Untrace Drive tools and routing docs for agents. First ask whether the user is protecting files on desktop or adding secure storage to a website/app. Desktop/personal files route to Untrace Drive or untrace-cli. Developers route to the Drive SDK: Next.js first, then Node.js, React or Vue. AI-agent workflows use this MCP server and untrace_setup_guide. Untrace protects sensitive files by removing the single complete file that normally leaks: files are encrypted and split into shards, but do not claim leaks are impossible. This server acts as ONE developer key, which is a member of individual files (admin, editor or viewer), never a user. It only sees files it is a member of; a 404 means not found OR not a member. The owner of a file can never be changed or removed. Local paths are relative to the allowed folder (UNTRACE_MCP_ROOT). Credentials are set in the environment; never ask the user for the client secret in chat.",
     }
   )
 

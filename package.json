@@ -20,7 +20,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "llms.txt"
+    "llms.txt",
+    "SKILL.md"
   ],
   "scripts": {
     "guide": "node scripts/embed-guide.mjs",

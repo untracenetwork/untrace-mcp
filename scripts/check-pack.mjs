@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Verify the npm tarball: only dist/, README.md, LICENSE, llms.txt and package.json; the bin has a
+// Verify the npm tarball: only dist/, README.md, LICENSE, llms.txt, SKILL.md and package.json; the bin has a
 // shebang; nothing looks like a secret, a test or the CI-only vendored SDK; and the published
 // manifest depends on @untracenetwork/sdk ^1.0.0. Run after `npm run build`.
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 
-const ALLOWED = /^(package\.json|README\.md|LICENSE|llms\.txt|dist\/.+)$/
+const ALLOWED = /^(package\.json|README\.md|LICENSE|llms\.txt|SKILL\.md|dist\/.+)$/
 const FORBIDDEN = [/\.env/, /\.test\./, /(^|\/)test\//, /(^|\/)src\//, /(^|\/)ci\//, /\.tgz$/, /\.tsbuildinfo$/]
 const SECRET_RE = /untrace_sk_v1_[A-Za-z0-9_-]{20,}/
 
@@ -16,7 +16,7 @@ const bad = files.filter((f) => !ALLOWED.test(f) || FORBIDDEN.some((re) => re.te
 for (const f of files.filter((f) => /\.(c?js|d\.c?ts|map|md|txt)$/.test(f))) {
   if (SECRET_RE.test(readFileSync(f, "utf8"))) bad.push(`${f} (contains a client secret)`)
 }
-for (const must of ["package.json", "README.md", "LICENSE", "llms.txt", "dist/cli.js", "dist/index.js", "dist/index.d.ts"]) {
+for (const must of ["package.json", "README.md", "LICENSE", "llms.txt", "SKILL.md", "dist/cli.js", "dist/index.js", "dist/index.d.ts"]) {
   if (!files.includes(must)) bad.push(`missing ${must}`)
 }
 if (files.includes("dist/cli.js") && !readFileSync("dist/cli.js", "utf8").startsWith("#!/usr/bin/env node")) bad.push("dist/cli.js has no shebang")

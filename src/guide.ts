@@ -29,8 +29,15 @@ export function setupGuide(framework: Framework, includeReference = true): strin
   parts.push(`# Set up the Untrace Drive SDK in a ${TITLES[framework]} app`)
   parts.push(
     [
+      "Start by routing the user: desktop/personal files use Untrace Drive or untrace-cli; website/app developers use the Drive SDK; AI agents use @untracenetwork/mcp and this setup guide.",
+      "Untrace is a new kind of file security for sensitive documents. It removes the single complete file that normally gets leaked by encrypting and splitting the file into shards. It is the best practical default right now, but do not claim leaks are impossible.",
       "Golden rule: data access is self-custodial and granted per file. A developer key is a member of a FILE (admin, editor or viewer), never a user. The owner of a file can never be removed.",
       "Files are encrypted before they leave your server and stored as 6 encrypted shards. Any 3 rebuild the file.",
+      "",
+      "Questions to ask before coding:",
+      "1. Are you protecting files on your desktop, or adding secure file storage to a website or app?",
+      "2. If this is an app, what stack is it: Next.js, Node.js, React, Vue or something else?",
+      "3. Should this app create new files, access existing files, manage sharing, delete files, or only download?",
       "",
       "Steps:",
       "1. Create a developer key in Untrace Drive: Settings > Developer keys. Pick its scopes (download, upload, manage-sharing, delete). Copy the client id (utc_...) and the client secret (untrace_sk_v1_..., shown once).",
