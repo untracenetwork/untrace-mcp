@@ -1,0 +1,63 @@
+{
+  "name": "@untracenetwork/mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Untrace Drive: let an AI agent list, read, upload and share files a developer key is a member of.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "untrace-mcp": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "llms.txt"
+  ],
+  "scripts": {
+    "guide": "node scripts/embed-guide.mjs",
+    "prebuild": "npm run guide",
+    "build": "tsup",
+    "pretypecheck": "npm run guide",
+    "typecheck": "tsc -p tsconfig.json",
+    "pretest": "npm run guide",
+    "test": "vitest run",
+    "pack:check": "node scripts/check-pack.mjs",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@untracenetwork/sdk": "^1.0.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.5.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "homepage": "https://untrace.network/docs/mcp",
+  "keywords": [
+    "untrace",
+    "untrace-drive",
+    "mcp",
+    "model-context-protocol",
+    "encrypted-storage",
+    "ai-agents"
+  ]
+}

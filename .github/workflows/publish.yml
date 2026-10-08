@@ -1,0 +1,105 @@
+name: Publish to npm
+# The ONLY workflow that publishes. Manual only:
+#   1. Run it from the release tag (Actions -> Publish to npm -> "Use workflow from: v1.0.0").
+#   2. Type the version in `confirm` (for example 1.0.0). It must equal the tag and package.json.
+#   3. The `publish` job waits in the `npm-publish` environment until JC approves it.
+# NPM_TOKEN is an ENVIRONMENT secret of `npm-publish`, never a repo secret. See docs/RELEASING.md.
+# @untracenetwork/sdk must already be on npm: this workflow never uses the CI-only vendored SDK.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type the version to publish (must equal the tag you run this from, without the v)"
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Run from the matching v* tag, with the version typed
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Run this workflow from a v* tag, not from $GITHUB_REF_TYPE $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if [ "v$CONFIRM" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::confirm ($CONFIRM) does not match the tag ($GITHUB_REF_NAME)"
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: The package is at the confirmed version
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: node scripts/check-version.mjs "$CONFIRM"
+      - name: "@untracenetwork/sdk is published (required dependency)"
+        run: npm view "@untracenetwork/sdk@1.0.0" version
+      - run: npm install --no-audit --no-fund --no-package-lock
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run pack:check
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # JC is the required reviewer of this environment; NPM_TOKEN lives only here.
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # npm provenance, this job only
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Re-check the version and the tag
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || [ "v$CONFIRM" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::confirm ($CONFIRM) does not match the tag ($GITHUB_REF_NAME)"
+            exit 1
+          fi
+          node scripts/check-version.mjs "$CONFIRM"
+      - name: Check NPM_TOKEN
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN is not set on the npm-publish environment. See docs/RELEASING.md."
+            exit 1
+          fi
+      - run: npm install --no-audit --no-fund --no-package-lock
+      - run: npm run build
+      - run: npm run pack:check
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ inputs.confirm }}
+        run: |
+          dist_tag=latest
+          case "$VERSION" in *-*) dist_tag=next ;; esac
+          if npm view "@untracenetwork/mcp@$VERSION" version >/dev/null 2>&1; then
+            echo "@untracenetwork/mcp@$VERSION already published, skipping"
+            exit 0
+          fi
+          npm publish --provenance --access public --tag "$dist_tag"

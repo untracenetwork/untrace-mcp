@@ -1,0 +1,40 @@
+# @untracenetwork/mcp
+
+> MCP server (stdio) for Untrace Drive. One developer key, acting only on files it is a member of. Run it with `npx -y @untracenetwork/mcp`.
+
+Docs: https://untrace.network/docs/mcp
+Untrace docs for agents: https://untrace.network/llms.txt
+npm: @untracenetwork/mcp (bin: untrace-mcp)
+
+## Rules
+
+- Self-custodial data access control. A developer key (client id `utc_...` + secret `untrace_sk_v1_...`, created in Untrace Drive under Settings > Developer keys) is a member of a FILE with role admin, editor or viewer. It is never a user.
+- The key sees only files it is a member of. A 404 means "no such file" OR "not a member". To fix, the owner adds the key in the file's sharing panel in Drive.
+- The owner of a file can never be added, changed or removed.
+- Scopes: download, upload, manage-sharing, delete. A call needs both the scope and the role.
+- Files are encrypted locally and stored as 6 encrypted shards. Any 3 rebuild the file.
+- Uploads are billed to the owner's plan. Max 95 MB per upload.
+- Credentials come only from environment variables: UNTRACE_CLIENT_ID, UNTRACE_CLIENT_SECRET, optional UNTRACE_BASE_URL. Never ask a user to paste the secret into chat. No tool takes it as an argument; it is redacted from all output.
+- Local file access is limited to UNTRACE_MCP_ROOT (default: the server's working directory).
+
+## Tools
+
+- untrace_list_files {limit?, cursor?}: files the key is a member of, with its role; paged by nextCursor.
+- untrace_get_file {fileId}: metadata and the key's role.
+- untrace_upload_file {path, name?, mime?}: encrypt and upload a local file as a new file. Returns fileId and metering. Needs scope upload.
+- untrace_download_file {fileId, path, overwrite?}: decrypt to a local path. Refuses an existing file unless overwrite is true. Needs scope download.
+- untrace_rename_file {fileId, name}: needs editor or admin.
+- untrace_delete_file {fileId, confirm}: move to the owner's trash. confirm must be true; ask the user first. Needs scope delete and admin.
+- untrace_list_members {fileId}: owner wallet and member keys. Needs manage-sharing and admin.
+- untrace_add_member {fileId, clientId, role}: add another utc_ key as admin, editor or viewer.
+- untrace_set_member_role {fileId, clientId, role}: change a member key's role.
+- untrace_remove_member {fileId, clientId}: remove a member key. Never the owner.
+- untrace_setup_guide {framework: nextjs|node|react|vue, includeReference?}: step-by-step SDK setup for a developer's own app. Offline, needs no key.
+
+## Error codes
+
+not_found, owner_not_ready (owner must sign in to Drive once), owner_immutable, insufficient_scope, insufficient_role, auth, not_configured, payment_required, rate_limited (retry), unavailable (retry), timeout (retry), upload_incomplete (retry the whole upload), finalize_unknown (do NOT re-upload; check with untrace_get_file), integrity, path_refused, refused.
+
+## Drive SDK for apps
+
+@untracenetwork/next (Next.js, recommended), @untracenetwork/sdk (any server runtime), @untracenetwork/node (paths, streams, Express), @untracenetwork/react and @untracenetwork/vue (browser, call your own backend route). The secret stays on the server.
