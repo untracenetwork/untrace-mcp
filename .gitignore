@@ -1,0 +1,8 @@
+node_modules/
+dist/
+src/generated/
+*.tsbuildinfo
+coverage/
+.env*
+*.tgz
+!ci/vendor/*.tgz
