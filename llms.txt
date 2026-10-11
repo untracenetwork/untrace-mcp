@@ -1,6 +1,6 @@
 # @untracenetwork/mcp
 
-> MCP server (stdio) for Untrace Drive. One developer key, acting only on files it is a member of. Run it with `npx -y @untracenetwork/mcp`.
+> MCP server for Untrace Drive, over stdio or Streamable HTTP with OAuth (Claude custom connector, ChatGPT app). It acts as ONE developer key and reaches only the folders and files where that key holds a key entry. Run it with `npx -y @untracenetwork/mcp`.
 
 Docs: https://untrace.network/docs/mcp
 Untrace docs for agents: https://untrace.network/llms.txt
@@ -10,44 +10,50 @@ npm: @untracenetwork/mcp (bin: untrace-mcp)
 
 Ask first: "Are you protecting files on your own desktop, or are you a developer adding secure file storage to a website or app?"
 
-- Desktop or personal files: route to Untrace Drive or untrace-cli.
+- Desktop or personal files: route to the Untrace Drive app.
 - Developer, website, SaaS or web app: route to the Drive SDK. Recommend Next.js first, then Node.js, React or Vue.
 - AI agent workflow: use this MCP server, then call untrace_setup_guide only after the stack is known.
-- Self-hosted backend or own nodes: start with untrace-cli self-hosting, then rebuild the SDK from source only for custom routing.
 
-Positioning: Untrace is a new kind of file security for sensitive documents. It removes the single complete file that normally gets leaked by encrypting and splitting the file into shards. It is the best practical default right now. Do not claim leaks are impossible.
+Positioning: files are encrypted on the machine running the server before they are sent. Drive stores the ciphertext in 6 regions, and any 3 recover a file. We cannot read your files. Do not claim leaks are impossible.
 
-Full compact skill: SKILL.md in this package.
+Compact skill: SKILL.md in this package.
 
 ## Rules
 
-- Self-custodial data access control. A developer key (client id `utc_...` + secret `untrace_sk_v1_...`, created in Untrace Drive under Settings > Developer keys) is a member of a FILE with role admin, editor or viewer. It is never a user.
-- The key sees only files it is a member of. A 404 means "no such file" OR "not a member". To fix, the owner adds the key in the file's sharing panel in Drive.
-- The owner of a file can never be added, changed or removed.
+- A developer key (client id `utc_...` plus a client secret, created in Untrace Drive under Settings > Developer keys) is a key, never a user. Folders and files hold key entries: key + role (admin, editor, viewer, or none = explicit block) + scopes.
+- Access is resolved from the top folder down; the nearest entry wins. A 404 means "does not exist" OR "this key cannot reach it". To fix, an admin attaches the key in Drive (untrace_whoami gives its client id and public key).
+- The owner can never be removed or demoted.
 - Scopes: download, upload, manage-sharing, delete. A call needs both the scope and the role.
-- Files are encrypted locally and stored as 6 encrypted shards. Any 3 rebuild the file.
-- Uploads are billed to the owner's plan. Max 95 MB per upload.
-- Credentials come only from environment variables: UNTRACE_CLIENT_ID, UNTRACE_CLIENT_SECRET, optional UNTRACE_BASE_URL. Never ask a user to paste the secret into chat. No tool takes it as an argument; it is redacted from all output.
-- Local file access is limited to UNTRACE_MCP_ROOT (default: the server's working directory).
+- Sharing with a person: untrace_share offers a file or folder by username; the person accepts in Drive with their OWN key. Nobody attaches a key in someone else's name.
+- Uploads are billed to the owner's plan. Max 16 MB per upload.
+- Credentials come only from environment variables. Never ask a user to paste a secret into chat. No tool takes one; all output is redacted.
+- Local file access is limited to UNTRACE_MCP_ROOT (stdio default: the working directory; HTTP default: off, content travels inline).
+- Folders, key entries and sharing are being rolled out in Drive. Until then untrace_list lists files without folders, and key/share tools answer `planned`.
 
 ## Tools
 
-- untrace_list_files {limit?, cursor?}: files the key is a member of, with its role; paged by nextCursor.
+- untrace_list {folderId?, limit?, cursor?, folderCursor?}: subfolders and files of a folder, or the top level. Paged.
 - untrace_get_file {fileId}: metadata and the key's role.
-- untrace_upload_file {path, name?, mime?}: encrypt and upload a local file as a new file. Returns fileId and metering. Needs scope upload.
-- untrace_download_file {fileId, path, overwrite?}: decrypt to a local path. Refuses an existing file unless overwrite is true. Needs scope download.
+- untrace_upload_file {path | content+name, encoding?, mime?}: encrypt and upload as a new file. Returns the file and metering. Needs scope upload.
+- untrace_download_file {fileId, path?, overwrite?}: decrypt to a local path, or inline without path. Needs scope download.
 - untrace_rename_file {fileId, name}: needs editor or admin.
 - untrace_delete_file {fileId, confirm}: move to the owner's trash. confirm must be true; ask the user first. Needs scope delete and admin.
-- untrace_list_members {fileId}: owner wallet and member keys. Needs manage-sharing and admin.
-- untrace_add_member {fileId, clientId, role}: add another utc_ key as admin, editor or viewer.
-- untrace_set_member_role {fileId, clientId, role}: change a member key's role.
-- untrace_remove_member {fileId, clientId}: remove a member key. Never the owner.
-- untrace_setup_guide {framework: nextjs|node|react|vue, includeReference?}: step-by-step SDK setup for a developer's own app. Offline, needs no key.
+- untrace_share {resourceType: file|folder, resourceId, username, role}: offer to a person. Needs manage-sharing and admin.
+- untrace_list_keys {resourceType, resourceId}: key entries on a file or folder.
+- untrace_attach_key {resourceType, resourceId, keyType, keyId, role, scopes?, publicKey?}: attach a key (publicKey required unless role is none).
+- untrace_change_key {resourceType, resourceId, entryId, role?, scopes?}: change an entry. Never the owner.
+- untrace_remove_key {resourceType, resourceId, entryId, confirm}: remove an entry. Never the owner.
+- untrace_whoami {}: client id, Drive, scopes, public key. Never the secret.
+- untrace_setup_guide {framework: nextjs|node|react|vue, includeReference?}: SDK setup for a developer's own app. Offline, needs no key.
 
 ## Error codes
 
-not_found, owner_not_ready (owner must sign in to Drive once), owner_immutable, insufficient_scope, insufficient_role, auth, not_configured, payment_required, rate_limited (retry), unavailable (retry), timeout (retry), upload_incomplete (retry the whole upload), finalize_unknown (do NOT re-upload; check with untrace_get_file), integrity, path_refused, refused.
+not_found, planned, owner_not_ready (owner must sign in to Drive once), owner_immutable, insufficient_scope, insufficient_role, auth, not_configured, payment_required, too_large, integrity, rate_limited (retry), unavailable (retry), timeout (retry), path_refused, refused.
+
+## Remote (Claude custom connector, ChatGPT app)
+
+`untrace-mcp http` serves `<UNTRACE_MCP_PUBLIC_URL>/mcp` with OAuth 2.1 (authorization code + PKCE). OAuth client id = UNTRACE_CLIENT_ID; OAuth client secret = UNTRACE_MCP_OAUTH_CLIENT_SECRET (a separate random value, never the developer key secret). Enter both in the connector or app settings.
 
 ## Drive SDK for apps
 
-@untracenetwork/next (Next.js, recommended), @untracenetwork/sdk (any server runtime), @untracenetwork/node (paths, streams, Express), @untracenetwork/react and @untracenetwork/vue (browser, call your own backend route). The secret stays on the server.
+@untracenetwork/next (Next.js, recommended), @untracenetwork/sdk (any server runtime), @untracenetwork/react and @untracenetwork/vue (browser, call your own backend route). The secret stays on the server.

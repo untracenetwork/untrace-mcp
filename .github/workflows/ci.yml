@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: 22
       # CI only: the SDK comes from npm when published, else from ci/vendor (see ci/install.sh).
+      - run: npm run check:public
       - run: ci/install.sh
       - run: npm run build
       - run: npm run typecheck

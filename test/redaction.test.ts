@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { UntraceClient, UntraceError, UntraceServerError } from "@untracenetwork/sdk"
+import { CLIENT_SECRET_PREFIX, UntraceClient, UntraceError, UntraceServerError } from "@untracenetwork/sdk"
 
 import { redact } from "../src/redact"
 import { createServer } from "../src/server"
@@ -10,7 +10,7 @@ afterEach(() => {
   process.env = { ...saved }
 })
 
-const BODY = SECRET.slice("untrace_sk_v1_".length)
+const BODY = SECRET.slice(CLIENT_SECRET_PREFIX.length)
 
 describe("secret redaction", () => {
   it("redact() strips prefixed secrets, bare configured secrets, bearer tokens and token fields", () => {
@@ -53,11 +53,11 @@ describe("secret redaction", () => {
 
   it("a malformed secret in the environment is reported without echoing it", async () => {
     process.env.UNTRACE_CLIENT_ID = "utc_7Kq2mXv9PpR4sTzW8nYbC3"
-    process.env.UNTRACE_CLIENT_SECRET = "untrace_sk_v1_tooShortButSecretish"
+    process.env.UNTRACE_CLIENT_SECRET = `${CLIENT_SECRET_PREFIX}tooShortButSecretish`
     delete process.env.UNTRACE_BASE_URL
     const h = await harness({ client: () => new UntraceClient() as never })
     try {
-      const r = await h.call("untrace_list_files")
+      const r = await h.call("untrace_list")
       expect(r.isError).toBe(true)
       expect(r.text).toMatch(/^not_configured:/)
       expect(r.text).toMatch(/Settings > Developer keys/)
@@ -74,7 +74,7 @@ describe("secret redaction", () => {
     expect(server).toBeTruthy()
     const h = await harness({ client: () => new UntraceClient() as never })
     try {
-      const r = await h.call("untrace_list_files")
+      const r = await h.call("untrace_list")
       expect(r.text).toMatch(/^not_configured:.*UNTRACE_CLIENT_ID/s)
       const g = await h.call("untrace_setup_guide", { framework: "node" })
       expect(g.isError).toBe(false)
@@ -88,7 +88,7 @@ describe("secret redaction", () => {
     const h = await harness()
     try {
       h.client.files.list.mockRejectedValueOnce(new UntraceError({ status: 400, code: "invalid_request", message: "untrace: limit must be an integer from 1 to 200" }))
-      const r = await h.call("untrace_list_files")
+      const r = await h.call("untrace_list")
       expect(r.text).toMatch(/^invalid_request: untrace: limit/)
     } finally {
       await h.close()
