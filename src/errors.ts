@@ -7,6 +7,7 @@ import {
   UntraceAuthError,
   UntraceConflictError,
   UntraceError,
+  UntraceFolderAccessError,
   UntraceIntegrityError,
   UntraceNotFoundError,
   UntracePaymentRequiredError,
@@ -50,7 +51,15 @@ export function describeError(err: unknown): ToolErrorInfo {
   if (err instanceof UntracePlannedError) {
     return {
       code: "planned",
-      message: `This Drive does not offer ${err.operationId} yet (folders, key entries and sharing by username are being rolled out). Nothing was changed.`,
+      message: `This Drive does not offer ${err.operationId} yet. Nothing was changed.`,
+      retryable: false,
+    }
+  }
+  if (err instanceof UntraceFolderAccessError) {
+    return {
+      code: "folder_access_required",
+      message:
+        "Refused (403): the key was not added to this folder, so it cannot put files there. A key uploads only into a folder it was added to with role editor or admin and the upload scope (a folder that does not exist answers the same). Pick a folder from untrace_list, make one with untrace_create_folder, or ask an admin of the folder to attach this key (untrace_whoami shows its client id and public key). Nothing was uploaded.",
       retryable: false,
     }
   }

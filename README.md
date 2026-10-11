@@ -26,8 +26,8 @@ leaks are impossible.
 ## How access works
 
 The server acts as one **developer key**: a client id (`utc_...`) and a client secret you create
-in Drive. Folders and files hold **key entries**. Each entry is a key (an account passkey, a
-developer key or a device key) with a **role** and **scopes**. The key this server runs as reaches
+in Drive. Every file lives in a folder. Folders and files hold **key entries**. Each entry is a
+key a person holds (an account passkey or a developer key) with a **role** and **scopes**. The key this server runs as reaches
 only the folders and files where it holds an entry, directly or through a parent folder. Access is
 resolved from the top folder down and the nearest entry wins, so a block (`none`) on a subfolder
 beats a grant on its parent. The owner can never be removed or demoted. A file the key cannot
@@ -38,9 +38,9 @@ A call is allowed only when the key's **scopes** and its **role** there both all
 | Scope | Allows |
 |---|---|
 | `download` | Open files the key can reach |
-| `upload` | Create new files in the owner's Drive (billed to the owner's plan) |
+| `upload` | Create folders, and new files in a folder the key was added to as `editor` or `admin` (billed to the owner's plan) |
 | `manage-sharing` | Share, and attach, change and remove keys where the key is `admin` |
-| `delete` | Move files to the trash where the key is `admin` |
+| `delete` | Move files and folders to the trash where the key is `admin` |
 
 | Role | download | add files, rename | manage keys, share | delete (to trash) |
 |---|---|---|---|---|
@@ -50,7 +50,8 @@ A call is allowed only when the key's **scopes** and its **role** there both all
 | none | no (an explicit block) | no | no | no |
 
 **Sharing with a person** works by username: `untrace_share` offers a file or folder with a role,
-and the person accepts in Drive, which attaches their **own** key. Nobody can attach a key in
+and the person accepts, which attaches their **own** key (in Drive, or with
+`untrace_accept_share` on a server that holds their sharing key). Nobody can attach a key in
 someone else's name. File and folder keys are opened on the machine running this server and
 sealed to the recipient's published sharing key after its signature is checked, so Untrace never
 sees them.
@@ -62,9 +63,11 @@ sees them.
    Untrace does not keep it. If you lose it, revoke the key and create a new one.
 3. The account that owns the key needs an active plan (otherwise Drive answers `payment_required`),
    and signs in to Drive once before the key uploads.
-4. Give the key access: in Drive, attach it to the folders or files it should reach, with a role.
-   Files the key uploads itself are reachable right away. `untrace_whoami` shows the key's client
-   id and public key, which an admin can also pass to `untrace_attach_key`.
+4. Give the key access: in Drive, add it to the folders it should reach, with a role. A key
+   uploads only into a folder it was added to as `editor` or `admin`, or into a folder it made
+   itself with `untrace_create_folder`. It becomes an editor of every file it uploads.
+   `untrace_whoami` shows the key's client id and public key, which an admin can also pass to
+   `untrace_attach_key`.
 
 ## 2. Environment variables
 
@@ -74,6 +77,7 @@ sees them.
 | `UNTRACE_CLIENT_SECRET` | all | The developer key's client secret |
 | `UNTRACE_BASE_URL` | all | Optional. Drive origin, default `https://drive.untrace.network` |
 | `UNTRACE_MCP_ROOT` | all | The only local folder uploads read from and downloads write to. stdio default: the folder the server starts in. HTTP default: local paths off |
+| `UNTRACE_SHARE_SECRET_KEY` | all | Optional. The account's sharing secret key (32 bytes, base64), only to accept shares with `untrace_accept_share`. Leave it unset to accept shares in Drive. It is a secret: treat it like the client secret |
 | `UNTRACE_MCP_MAX_INLINE_BYTES` | all | Optional. Largest download returned inline in a tool result. Default 4 MiB |
 | `UNTRACE_MCP_PUBLIC_URL` | http | The public HTTPS origin of the server, for example `https://mcp.example.com` |
 | `UNTRACE_MCP_OAUTH_CLIENT_SECRET` | http | The OAuth client secret you give Claude or ChatGPT. 32+ random characters, made with `untrace-mcp new-connector-secret` |
@@ -231,23 +235,27 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8787/mcp wit
 
 | Tool | What it does | Needs |
 |---|---|---|
-| `untrace_list` | Subfolders and files of one folder (`folderId`), or the top level. Paged (`cursor` for files, `folderCursor` for folders) | any role |
-| `untrace_get_file` | One file's metadata and the key's role | any role |
-| `untrace_upload_file` | Encrypt and upload a new file from a local `path`, or from `content` (text or base64) with a `name`. Max 16 MB. Returns the file and `metering` | scope `upload` |
+| `untrace_list` | Subfolders and files of one folder (`folderId`), or the top-level folders and every file the key reaches. Paged (`cursor` for files, `folderCursor` for folders) | any role |
+| `untrace_get_file` | One file's metadata, folder and the key's role | any role |
+| `untrace_upload_file` | Encrypt and upload a new file into `folderId` (required: a folder the key was added to), from a local `path` or from `content` (text or base64) with a `name`. Max 16 MB. The key becomes an editor of the new file. Returns the file and `metering` | scope `upload`, editor or admin on the folder |
 | `untrace_download_file` | Download and decrypt a file to a local `path` (never replaces a file unless `overwrite: true`), or inline without `path` (text, image or base64) | scope `download` |
 | `untrace_rename_file` | Rename a file | editor or admin |
+| `untrace_move_file` | Move a file into another folder. Its key is re-sealed to the target folder on this machine | admin on the file and the target |
 | `untrace_delete_file` | Move a file to the owner's trash. Requires `confirm: true`. Only the owner restores or purges | scope `delete`, admin |
-| `untrace_share` | Offer a file or folder to an Untrace `username` with a role. They accept in Drive with their own key | scope `manage-sharing`, admin |
-| `untrace_list_keys` | The key entries on a file or folder: type, key id, role, scopes | admin |
-| `untrace_attach_key` | Attach a key (for example another developer key) to a file or folder with a role and scopes, or block it with role `none` | scope `manage-sharing`, admin |
+| `untrace_create_folder` | Create a folder at the top level (the key becomes its admin) or inside `parentId` | scope `upload`, editor or admin on the parent |
+| `untrace_get_folder` | One folder's name, parent, the key's role and its public key | any role |
+| `untrace_rename_folder` | Rename a folder | editor or admin |
+| `untrace_move_folder` | Move a folder under another one. Never inside itself | admin on the folder, editor or admin on the target |
+| `untrace_trash_folder` | Move a folder and everything in it to the owner's trash. Requires `confirm: true` | scope `delete`, admin |
+| `untrace_share` | Offer a file or folder to an Untrace `username` with a role. They accept with their own key | scope `manage-sharing`, admin |
+| `untrace_list_incoming_shares` | Pending shares other users offered to the account that owns the key | nothing |
+| `untrace_accept_share` | Accept a pending share by attaching this key. Needs `UNTRACE_SHARE_SECRET_KEY`; otherwise accept in Drive | nothing |
+| `untrace_list_keys` | The key entries on a file or folder: type (`passkey` or `client`), key id, role, scopes | scope `manage-sharing`, admin |
+| `untrace_attach_key` | Attach a key the account holds (`keyType` `client` or `passkey`) to a file or folder with a role and scopes, or block it with role `none` | scope `manage-sharing`, admin |
 | `untrace_change_key` | Change an entry's role or scopes. Never the owner | scope `manage-sharing`, admin |
 | `untrace_remove_key` | Remove an entry. Requires `confirm: true`. Never the owner | scope `manage-sharing`, admin |
 | `untrace_whoami` | This key's client id, Drive, scopes and public key. Never the secret | nothing |
 | `untrace_setup_guide` | Step-by-step instructions, with code, for adding the Drive SDK to a Next.js, Node.js, React or Vue app. Works offline, no key needed | nothing |
-
-Folders, key entries and sharing by username are being rolled out in Drive. Until a Drive serves
-them, `untrace_list` lists every file the key can reach without folders, and the key and share
-tools answer `planned` without changing anything.
 
 Local paths are relative to `UNTRACE_MCP_ROOT`. Paths that leave it (`..`, absolute paths
 elsewhere, symlinks that point outside) are refused, and downloads never write through a symlink.
@@ -259,7 +267,8 @@ Errors come back as MCP tool errors that start with a short code and say what to
 | Code | Meaning |
 |---|---|
 | `not_found` | It does not exist, or this key cannot reach it (Untrace never says which). Ask an admin to attach the key |
-| `planned` | This Drive does not offer the operation yet. Nothing changed |
+| `folder_access_required` | The key was not added to this folder (as `editor` or `admin`), so it cannot upload there. Pick another folder, create one, or ask an admin to add the key |
+| `conflict` | For example a folder moved inside itself, or a key that is already attached |
 | `owner_not_ready` | The owner has not signed in to Drive once yet, so uploads cannot be sealed to them |
 | `owner_immutable` | The owner can never be removed, demoted or changed |
 | `insufficient_scope` / `insufficient_role` | The key's scopes or its role there do not allow the call |
@@ -273,7 +282,7 @@ Errors come back as MCP tool errors that start with a short code and say what to
 ### Metering
 
 Uploads count against the **owner's** plan. `untrace_upload_file` returns
-`metering: { billedTo: "owner", meteredBytes, usageBytes, quotaBytes, unlimited, clientId }`.
+`metering: { billedTo: "owner", meteredBytes, usageBytes, quotaBytes }` (`quotaBytes` `-1` means unlimited).
 
 ## Set up the Drive SDK in your app
 

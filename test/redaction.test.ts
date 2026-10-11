@@ -41,7 +41,7 @@ describe("secret redaction", () => {
   it("a successful result that contains the secret is redacted", async () => {
     process.env.UNTRACE_CLIENT_SECRET = SECRET
     const c = mockClient()
-    c.files.rename.mockResolvedValueOnce({ fileId: FILE_ID, name: `leak ${SECRET}`, meta: {} as never })
+    c.files.rename.mockResolvedValueOnce({ fileId: FILE_ID, name: `leak ${SECRET}` })
     const h = await harness({ client: c })
     try {
       const r = await h.call("untrace_rename_file", { fileId: FILE_ID, name: "x" })

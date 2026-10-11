@@ -6,7 +6,8 @@
  * lazily, so the server starts (and untrace_setup_guide works) before a key is configured.
  *
  * Files are encrypted and decrypted by the SDK on the machine running this server. Folder and
- * file keys only ever leave it sealed to a recipient's public key.
+ * file keys only ever leave it sealed to a recipient's public key, and the SDK does all of that
+ * sealing: this server holds no cryptography of its own.
  */
 import { mkdir, open, readFile, stat } from "node:fs/promises"
 import { basename, dirname } from "node:path"
@@ -14,14 +15,23 @@ import { basename, dirname } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import {
   UntraceClient,
-  UntraceIntegrityError,
-  sealToPublicKey,
-  verifyShareKey,
+  type AcceptShareInput,
+  type AttachKeyInput,
+  type CallOptions,
+  type CreateFolderInput,
   type DownloadResult,
+  type EntryRole,
   type FileList,
   type FileWithKey,
-  type OperationId,
-  type OwnerShareKey,
+  type Folder,
+  type FolderList,
+  type GrantRole,
+  type KeyEntry,
+  type ListOptions,
+  type OfferShareInput,
+  type ResourceRef,
+  type Scope,
+  type Share,
   type UploadInput,
   type UploadResult,
 } from "@untracenetwork/sdk"
@@ -43,19 +53,34 @@ export interface UntraceLike {
   readonly clientId: string
   readonly baseUrl: string
   files: {
-    list(opts?: { cursor?: string | null; limit?: number }): Promise<FileList>
+    list(opts?: ListOptions & { folderId?: string | null }): Promise<FileList>
     get(fileId: string): Promise<FileWithKey>
     upload(input: UploadInput): Promise<UploadResult>
     download(fileId: string): Promise<DownloadResult>
     rename(fileId: string, name: string): Promise<{ fileId: string; name: string }>
+    move(fileId: string, folderId: string | null): Promise<{ fileId: string; name: string; folderId: string | null }>
     delete(fileId: string): Promise<{ fileId: string; trashed: boolean }>
   }
-  call<T = unknown>(
-    operationId: OperationId,
-    input?: { params?: Record<string, string>; query?: Record<string, string | number | null | undefined>; body?: unknown }
-  ): Promise<T>
+  folders: {
+    list(opts?: ListOptions & { parentId?: string | null }): Promise<FolderList>
+    get(folderId: string): Promise<Folder>
+    create(input: CreateFolderInput): Promise<Folder>
+    rename(folderId: string, name: string): Promise<Folder>
+    move(folderId: string, parentId: string | null): Promise<Folder>
+    trash(folderId: string): Promise<{ removed: true }>
+  }
+  keys: {
+    list(resource: ResourceRef): Promise<KeyEntry[]>
+    attach(resource: ResourceRef, input: AttachKeyInput): Promise<KeyEntry>
+    change(resource: ResourceRef, entryId: string, change: { role?: EntryRole; scopes?: Scope[] }): Promise<KeyEntry>
+    remove(resource: ResourceRef, entryId: string): Promise<{ removed: true }>
+  }
+  shares: {
+    offer(input: OfferShareInput): Promise<Share>
+    incoming(call?: CallOptions): Promise<Share[]>
+    accept(share: Pick<Share, "shareId" | "sealedKey">, input: AcceptShareInput): Promise<KeyEntry>
+  }
   boxPublicKey(): Promise<string>
-  openFileKey(sealed: string | null | undefined): Promise<Uint8Array>
   getToken(): Promise<{ scopes: string[]; expiresAt: number }>
 }
 
@@ -70,6 +95,12 @@ export interface ServerOptions {
   root?: string | false
   /** Inline download limit in bytes. Default UNTRACE_MCP_MAX_INLINE_BYTES or 4 MiB. */
   maxInlineBytes?: number
+  /**
+   * The account's sharing secret key (32 bytes), to accept shares with this key. Default
+   * UNTRACE_SHARE_SECRET_KEY (standard base64). Unset: untrace_accept_share refuses and the
+   * person accepts in Drive.
+   */
+  shareSecretKey?: string
 }
 
 export const TOOL_NAMES = [
@@ -78,8 +109,16 @@ export const TOOL_NAMES = [
   "untrace_upload_file",
   "untrace_download_file",
   "untrace_rename_file",
+  "untrace_move_file",
   "untrace_delete_file",
+  "untrace_create_folder",
+  "untrace_get_folder",
+  "untrace_rename_folder",
+  "untrace_move_folder",
+  "untrace_trash_folder",
   "untrace_share",
+  "untrace_list_incoming_shares",
+  "untrace_accept_share",
   "untrace_list_keys",
   "untrace_attach_key",
   "untrace_change_key",
@@ -90,8 +129,10 @@ export const TOOL_NAMES = [
 
 const uuid = z.string().uuid()
 const fileIdSchema = uuid.describe("The file id (a UUID), as returned by untrace_list or untrace_upload_file.")
+const folderIdSchema = uuid.describe("The folder id (a UUID), as returned by untrace_list or untrace_create_folder.")
 const resourceType = z.enum(["file", "folder"]).describe("Whether resourceId is a file or a folder.")
 const resourceId = uuid.describe("The file id or folder id (a UUID).")
+const nameSchema = z.string().min(1).max(256)
 const roleSchema = z
   .enum(["admin", "editor", "viewer"])
   .describe("admin: everything below plus manage keys and delete. editor: download, add files, rename. viewer: download only. The owner role is never granted.")
@@ -108,9 +149,6 @@ const publicKeySchema = z
   .regex(/^[A-Za-z0-9+/]{43}=$/, "publicKey is a 32-byte key in standard base64 (44 characters)")
   .describe("The box public key of the key you attach (standard base64, 44 characters). A server running as that key shows it with untrace_whoami.")
 
-type Role = z.infer<typeof roleSchema>
-type EntryRole = z.infer<typeof entryRole>
-type Scope = z.infer<typeof scopeSchema>
 type ResourceType = "file" | "folder"
 
 function ok(data: unknown) {
@@ -118,18 +156,22 @@ function ok(data: unknown) {
   return { content: [{ type: "text" as const, text }] }
 }
 
-/** Drop key material from API results before returning them. */
-function clean(o: object): Record<string, unknown> {
-  const { wrappedKey: _wk, sealedKey: _sk, meta: _meta, ...rest } = o as Record<string, unknown>
+/** Drop key material from API results before returning them. Public keys stay. */
+function clean(o: object | null | undefined): Record<string, unknown> {
+  const { wrappedKey: _wk, sealedKey: _sk, keyPath: _kp, meta: _meta, ...rest } = (o ?? {}) as Record<string, unknown>
   return rest
 }
 
 const TEXT_MIME = /^(text\/|application\/(json|xml|yaml|x-yaml|javascript|toml|csv)\b)|\+(json|xml)$/i
 const IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/i
+const CLIENT_ID_RE = /^utc_[1-9A-HJ-NP-Za-km-z]{22}$/
 
-const KEY_OPS: Record<ResourceType, { list: OperationId; attach: OperationId; change: OperationId; remove: OperationId; param: string }> = {
-  file: { list: "listFileKeys", attach: "attachFileKey", change: "changeFileKey", remove: "removeFileKey", param: "fileId" },
-  folder: { list: "listFolderKeys", attach: "attachFolderKey", change: "changeFolderKey", remove: "removeFolderKey", param: "folderId" },
+function decodeShareSecret(b64: string | undefined): Uint8Array | null {
+  const v = b64?.trim()
+  if (!v) return null
+  const bytes = new Uint8Array(Buffer.from(v, "base64"))
+  if (bytes.length !== 32) throw new ToolRefusal("Refused: UNTRACE_SHARE_SECRET_KEY must be 32 bytes in standard base64.")
+  return bytes
 }
 
 export function createServer(opts: ServerOptions = {}): McpServer {
@@ -151,6 +193,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     return (rootPromise ??= resolveRoot(rootSetting))
   }
   const maxInline = opts.maxInlineBytes ?? (Number(process.env.UNTRACE_MCP_MAX_INLINE_BYTES) || DEFAULT_MAX_INLINE_BYTES)
+  const shareSecretSetting = opts.shareSecretKey ?? process.env.UNTRACE_SHARE_SECRET_KEY
 
   const server = new McpServer(
     { name: "untrace-mcp", version: VERSION },
@@ -158,8 +201,9 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       instructions: [
         "Untrace Drive tools. This server acts as ONE developer key (client id utc_...). It reaches only folders and files where that key holds a key entry. A not_found answer means the item does not exist OR this key cannot reach it, never which.",
         "Files are encrypted on the machine running this server before upload, and decrypted there after download. Drive stores ciphertext only, in 6 regions, and any 3 recover a file. Untrace cannot read the files.",
-        "Sharing with a person: untrace_share offers a file or folder to their Untrace username; they accept in Drive by attaching their OWN key. Nobody can attach a key in someone else's name. The owner can never be removed or demoted.",
-        "Credentials are set in this server's environment. Never ask the user for the client secret in chat. Deleting a file or removing a key needs confirm: true after the user agrees.",
+        "Every file lives in a folder. A key uploads only into a folder it was added to (role editor or admin, scope upload): pick one with untrace_list or make one with untrace_create_folder.",
+        "Sharing with a person: untrace_share offers a file or folder to their Untrace username; they accept by attaching their OWN key. Nobody can attach a key in someone else's name. The owner can never be removed or demoted.",
+        "Credentials are set in this server's environment. Never ask the user for the client secret in chat. Deleting a file, trashing a folder or removing a key needs confirm: true after the user agrees.",
         "Developers adding Untrace to their own app: call untrace_setup_guide once the stack is known.",
       ].join(" "),
     }
@@ -180,22 +224,14 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       }
     }
 
-  /** Fetch the sealed key of a file or folder this key holds, and open it on this machine. */
-  async function openResourceKey(type: ResourceType, id: string): Promise<Uint8Array> {
-    const c = getClient()
-    const sealed =
-      type === "file"
-        ? (await c.files.get(id)).wrappedKey
-        : (await c.call<{ sealedKey?: string }>("getFolder", { params: { folderId: id } }))?.sealedKey
-    return c.openFileKey(sealed)
-  }
+  const ref = (type: ResourceType, id: string): ResourceRef => ({ type, id })
 
-  server.registerTool(
+server.registerTool(
     "untrace_list",
     {
       title: "List folders and files",
       description:
-        "List what this key can reach: the subfolders and files inside one folder (folderId), or the top level when folderId is left out. Files come with their id, name, size, mime type and this key's role. Paged: pass nextCursor (files) or nextFolderCursor (folders) from a previous answer. If this Drive does not serve folders yet, folders is null and every file the key can reach is listed.",
+        "List what this key can reach: the subfolders and files inside one folder (folderId), or the top-level folders this key was added to plus every file it can reach when folderId is left out. Items come with their id, name and this key's role. Paged: pass nextCursor (files) or nextFolderCursor (folders) from a previous answer.",
       inputSchema: {
         folderId: uuid.optional().describe("List inside this folder. Leave out for the top level."),
         limit: z.number().int().min(1).max(200).optional().describe("Items per page, 1 to 200."),
@@ -208,32 +244,14 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       const c = getClient()
       let folders: unknown[] | null = null
       let nextFolderCursor: string | null = null
-      let note: string | undefined
       if (!cursor) {
-        try {
-          const r = await c.call<{ folders?: Record<string, unknown>[]; nextCursor?: string | null }>("listFolders", {
-            query: { parentId: folderId, cursor: folderCursor, limit },
-          })
-          folders = (r?.folders ?? []).map((f) => clean(f))
-          nextFolderCursor = r?.nextCursor ?? null
-        } catch (err) {
-          if ((err as { code?: string })?.code !== "planned" || folderId || folderCursor) throw err
-          note = "This Drive does not serve folders yet, so every file this key can reach is listed."
-        }
+        const r = await c.folders.list({ parentId: folderId ?? null, cursor: folderCursor ?? null, limit })
+        folders = r.folders.map((f) => clean(f))
+        nextFolderCursor = r.nextCursor
       }
       if (folderCursor) return { folderId: folderId ?? null, folders, nextFolderCursor }
-      let files: unknown[]
-      let nextCursor: string | null
-      if (folderId) {
-        const r = await c.call<FileList>("listFiles", { query: { folderId, cursor, limit } })
-        files = r?.files ?? []
-        nextCursor = r?.nextCursor ?? null
-      } else {
-        const r = await c.files.list({ limit, cursor: cursor ?? null })
-        files = r.files
-        nextCursor = r.nextCursor
-      }
-      return { folderId: folderId ?? null, folders, nextFolderCursor, files, nextCursor, ...(note ? { note } : {}) }
+      const r = await c.files.list({ folderId: folderId ?? null, cursor: cursor ?? null, limit })
+      return { folderId: folderId ?? null, folders, nextFolderCursor, files: r.files.map((f) => clean(f)), nextCursor: r.nextCursor }
     })
   )
 
@@ -241,7 +259,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     "untrace_get_file",
     {
       title: "Get file details",
-      description: "Get one file's metadata (name, size, mime type, created date) and this key's role on it. Does not download the content.",
+      description: "Get one file's metadata (name, size, mime type, folder, created date) and this key's role on it. Does not download the content.",
       inputSchema: { fileId: fileIdSchema },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -253,17 +271,18 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     {
       title: "Upload a file",
       description:
-        "Encrypt a file and upload it as a NEW file in the key owner's Drive (needs the upload scope; billed to the owner's plan). Give either path (a local file inside the allowed folder, UNTRACE_MCP_ROOT) or content (the file itself, as text or base64) with a name. At most 16 MB. Returns the new file and the metering. The key becomes an editor of the new file.",
+        "Encrypt a file and upload it as a NEW file into a folder (needs the upload scope; billed to the owner's plan). folderId is required: the file must go into a folder this key was added to, with role editor or admin (see untrace_list, or make one with untrace_create_folder). Give either path (a local file inside the allowed folder, UNTRACE_MCP_ROOT) or content (the file itself, as text or base64) with a name. At most 16 MB. Returns the new file and the metering. Your key becomes an editor of the new file.",
       inputSchema: {
+        folderId: uuid.describe("REQUIRED. The folder to put the file in. This key must have been added to it (role editor or admin)."),
         path: z.string().min(1).optional().describe("Local file to upload, relative to the allowed folder (UNTRACE_MCP_ROOT). Not available on a remote server."),
         content: z.string().max(23_000_000).optional().describe("The file content, when no path is given."),
         encoding: z.enum(["utf8", "base64"]).optional().default("utf8").describe("How content is encoded. Default utf8 (plain text)."),
-        name: z.string().min(1).max(256).optional().describe("File name in Drive. Required with content; defaults to the local file name with path."),
+        name: nameSchema.optional().describe("File name in Drive. Required with content; defaults to the local file name with path."),
         mime: z.string().max(128).optional().describe("MIME type, for example application/pdf. Default application/octet-stream."),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    run(async ({ path, content, encoding, name, mime }: { path?: string; content?: string; encoding?: "utf8" | "base64"; name?: string; mime?: string }) => {
+    run(async ({ folderId, path, content, encoding, name, mime }: { folderId: string; path?: string; content?: string; encoding?: "utf8" | "base64"; name?: string; mime?: string }) => {
       if ((path == null) === (content == null)) throw new ToolRefusal("Refused: give exactly one of path or content.")
       let data: Uint8Array
       let fileName: string
@@ -285,7 +304,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       }
       if (data.length === 0) throw new ToolRefusal("Refused: the file is empty.")
       if (data.length > MAX_UPLOAD_BYTES) throw new ToolRefusal(`Refused: the file is ${data.length} bytes. One upload is at most 16 MB in this version.`)
-      const r = await getClient().files.upload({ data, name: fileName, mime })
+      const r = await getClient().files.upload({ folderId, data, name: fileName, mime })
       return { file: clean(r.file), metering: r.metering }
     })
   )
@@ -344,10 +363,22 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     {
       title: "Rename a file",
       description: "Rename a file in Drive. Needs role editor or admin on that file.",
-      inputSchema: { fileId: fileIdSchema, name: z.string().min(1).max(256).describe("The new file name, 1 to 256 characters.") },
+      inputSchema: { fileId: fileIdSchema, name: nameSchema.describe("The new file name, 1 to 256 characters.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     run(async ({ fileId, name }: { fileId: string; name: string }) => clean(await getClient().files.rename(fileId, name)))
+  )
+
+  server.registerTool(
+    "untrace_move_file",
+    {
+      title: "Move a file to another folder",
+      description:
+        "Move a file into another folder. Needs role admin on the file and on the target folder. The file key is opened on this machine and sealed to the target folder's public key, which is checked first, so Untrace never sees it.",
+      inputSchema: { fileId: fileIdSchema, folderId: folderIdSchema.describe("The target folder (a UUID).") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    run(async ({ fileId, folderId }: { fileId: string; folderId: string }) => clean(await getClient().files.move(fileId, folderId)))
   )
 
   server.registerTool(
@@ -369,31 +400,120 @@ export function createServer(opts: ServerOptions = {}): McpServer {
   )
 
   server.registerTool(
+    "untrace_create_folder",
+    {
+      title: "Create a folder",
+      description:
+        "Create a folder, at the top level of the key owner's Drive (this key becomes its admin) or inside a folder this key can add to (parentId, role editor or admin). Needs the upload scope. A fresh folder key is made on this machine; Drive only receives its public key and sealed copies.",
+      inputSchema: {
+        name: nameSchema.describe("The folder name, 1 to 256 characters."),
+        parentId: uuid.optional().describe("Create inside this folder. Leave out for the top level."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    run(async ({ name, parentId }: { name: string; parentId?: string }) => clean(await getClient().folders.create({ name, parentId: parentId ?? null })))
+  )
+
+  server.registerTool(
+    "untrace_get_folder",
+    {
+      title: "Get folder details",
+      description: "Get one folder's name, parent, created date, this key's role on it and its public key. Lists nothing inside it: use untrace_list with folderId for that.",
+      inputSchema: { folderId: folderIdSchema },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    run(async ({ folderId }: { folderId: string }) => clean(await getClient().folders.get(folderId)))
+  )
+
+  server.registerTool(
+    "untrace_rename_folder",
+    {
+      title: "Rename a folder",
+      description: "Rename a folder. Needs role editor or admin on it.",
+      inputSchema: { folderId: folderIdSchema, name: nameSchema.describe("The new folder name, 1 to 256 characters.") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    run(async ({ folderId, name }: { folderId: string; name: string }) => clean(await getClient().folders.rename(folderId, name)))
+  )
+
+  server.registerTool(
+    "untrace_move_folder",
+    {
+      title: "Move a folder under another folder",
+      description:
+        "Move a folder, with everything in it, under another folder. Needs role admin on the folder and role editor or admin on the target. A folder cannot move inside itself. The folder key is opened on this machine and sealed to the target's checked public key.",
+      inputSchema: { folderId: folderIdSchema, parentId: uuid.describe("The target parent folder (a UUID).") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    run(async ({ folderId, parentId }: { folderId: string; parentId: string }) => clean(await getClient().folders.move(folderId, parentId)))
+  )
+
+  server.registerTool(
+    "untrace_trash_folder",
+    {
+      title: "Move a folder to the trash",
+      description:
+        "Move a folder, its subfolders and their files to the owner's trash. Needs the delete scope and role admin. Only the owner can restore or purge it afterwards, in Drive. Pass confirm: true only after the user has agreed.",
+      inputSchema: {
+        folderId: folderIdSchema,
+        confirm: z.boolean().describe("Must be true. Set it only after the user has confirmed."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    run(async ({ folderId, confirm }: { folderId: string; confirm: boolean }) => {
+      if (confirm !== true) throw new ToolRefusal("Refused: this moves the folder and everything in it to the owner's trash. Ask the user, then call again with confirm: true.")
+      return { folderId, ...(await getClient().folders.trash(folderId)) }
+    })
+  )
+
+  server.registerTool(
     "untrace_share",
     {
       title: "Share with a person by username",
       description:
-        "Offer a file or folder to another Untrace user by username, with a role. The file or folder key is opened on the machine running this server and sealed to that user's published sharing key (its signature is checked first), so Untrace never sees it. Nothing is attached yet: the person accepts in Drive, which attaches their OWN key. Needs the manage-sharing scope and role admin.",
+        "Offer a file or folder to another Untrace user by username, with a role. The file or folder key is opened on the machine running this server and sealed to that user's published sharing key (its signature is checked first), so Untrace never sees it. Nothing is attached yet: the person accepts, which attaches their OWN key. Needs the manage-sharing scope and role admin.",
       inputSchema: { resourceType, resourceId, username: usernameSchema, role: roleSchema },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    run(async ({ resourceType: type, resourceId: id, username, role }: { resourceType: ResourceType; resourceId: string; username: string; role: Role }) => {
-      const c = getClient()
-      const rec = await c.call<OwnerShareKey>("getUserShareKey", { params: { username } })
-      if (!rec || typeof rec.publicKey !== "string" || !verifyShareKey(rec)) {
-        throw new UntraceIntegrityError(`untrace: the sharing key published for ${username} does not verify; nothing was shared`)
+    run(async ({ resourceType: type, resourceId: id, username, role }: { resourceType: ResourceType; resourceId: string; username: string; role: GrantRole }) => {
+      const share = await getClient().shares.offer({ resourceType: type, resourceId: id, username, role })
+      return { share: clean(share), next: `${username} accepts the share, which attaches their own key.` }
+    })
+  )
+
+  server.registerTool(
+    "untrace_list_incoming_shares",
+    {
+      title: "List shares offered to you",
+      description: "List the pending shares other users offered to the account that owns this key: share id, file or folder, role and who offered it.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    run(async () => ({ shares: (await getClient().shares.incoming()).map((s) => clean(s)) }))
+  )
+
+  server.registerTool(
+    "untrace_accept_share",
+    {
+      title: "Accept a share with this key",
+      description:
+        "Accept a pending share by attaching THIS developer key to the shared file or folder. The offered key is sealed to the account's sharing key, so this works only when the server runs with UNTRACE_SHARE_SECRET_KEY set; otherwise accept in Untrace Drive. The key is opened and re-sealed to this key on this machine.",
+      inputSchema: { shareId: uuid.describe("The share id, from untrace_list_incoming_shares.") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    run(async ({ shareId }: { shareId: string }) => {
+      const secret = decodeShareSecret(shareSecretSetting)
+      if (!secret) {
+        throw new ToolRefusal("Refused: this server has no sharing key (UNTRACE_SHARE_SECRET_KEY is not set). Accept the share in Untrace Drive instead.")
       }
-      const recipient = new Uint8Array(Buffer.from(rec.publicKey, "base64"))
-      if (recipient.length !== 32) throw new UntraceIntegrityError(`untrace: the sharing key published for ${username} is not 32 bytes; nothing was shared`)
-      const key = await openResourceKey(type, id)
-      let sealedKey: string
       try {
-        sealedKey = sealToPublicKey(key, recipient)
+        const c = getClient()
+        const share = (await c.shares.incoming()).find((s) => s.shareId === shareId)
+        if (!share) throw new ToolRefusal("Refused: no pending share with that id. untrace_list_incoming_shares lists them.")
+        return clean(await c.shares.accept(share, { shareSecretKey: secret }))
       } finally {
-        key.fill(0)
+        secret.fill(0)
       }
-      const share = await c.call<Record<string, unknown>>("createShare", { body: { resourceType: type, resourceId: id, username, role, sealedKey } })
-      return { share: clean(share ?? {}), next: `${username} accepts the share in Untrace Drive, which attaches their own key.` }
     })
   )
 
@@ -402,14 +522,13 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     {
       title: "List the keys on a file or folder",
       description:
-        "List the key entries set on a file or folder: entry id, key type (passkey, client or device), key id, role (owner, admin, editor, viewer, or none for an explicit block) and scopes. Access is resolved from the top folder down and the nearest entry wins. Needs role admin.",
+        "List the key entries set on a file or folder: entry id, key type (passkey or client), key id, role (owner, admin, editor, viewer, or none for an explicit block) and scopes. Access is resolved from the top folder down and the nearest entry wins. Needs the manage-sharing scope and role admin.",
       inputSchema: { resourceType, resourceId },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     run(async ({ resourceType: type, resourceId: id }: { resourceType: ResourceType; resourceId: string }) => {
-      const op = KEY_OPS[type]
-      const r = await getClient().call<{ entries?: Record<string, unknown>[] }>(op.list, { params: { [op.param]: id } })
-      return { resourceType: type, resourceId: id, entries: (r?.entries ?? []).map((e) => clean(e)) }
+      const entries = await getClient().keys.list(ref(type, id))
+      return { resourceType: type, resourceId: id, entries: entries.map((e) => clean(e)) }
     })
   )
 
@@ -418,33 +537,25 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     {
       title: "Attach a key to a file or folder",
       description:
-        "Attach a key the account holds (for example another developer key, keyType client) to a file or folder, with a role and scopes. The file or folder key is opened here and sealed to the attached key's publicKey. Use role none, without publicKey, to block a key here even if a parent folder grants it. To give a person access, use untrace_share instead. Needs the manage-sharing scope and role admin.",
+        "Attach a key the account holds (another developer key, keyType client, or the account's passkey, keyType passkey) to a file or folder, with a role and scopes. The file or folder key is opened here and sealed to the attached key's publicKey. Use role none, without publicKey, to block a key here even if a parent folder grants it. To give a person access, use untrace_share instead. Needs the manage-sharing scope and role admin.",
       inputSchema: {
         resourceType,
         resourceId,
-        keyType: z.enum(["client", "passkey", "device"]).describe("client: a developer key (keyId utc_...). passkey: an account passkey. device: a hardware key the user holds."),
-        keyId: z.string().min(1).max(128).describe("The key's public id: a client id (utc_...), an account address or a hardware key id."),
+        keyType: z.enum(["client", "passkey"]).describe("client: a developer key (keyId utc_...). passkey: the account's passkey (keyId: the account address)."),
+        keyId: z.string().min(8).max(128).describe("The key's public id: a client id (utc_...) or an account address."),
         role: entryRole,
         scopes: z.array(scopeSchema).max(4).optional().describe("Scopes for this entry: download, upload, manage-sharing, delete."),
         publicKey: publicKeySchema.optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    run(async (a: { resourceType: ResourceType; resourceId: string; keyType: string; keyId: string; role: EntryRole; scopes?: Scope[]; publicKey?: string }) => {
-      if (a.keyType === "client" && !/^utc_[1-9A-HJ-NP-Za-km-z]{22}$/.test(a.keyId)) throw new ToolRefusal("Refused: a client keyId is utc_ followed by 22 characters.")
-      const body: Record<string, unknown> = { keyType: a.keyType, keyId: a.keyId, role: a.role }
-      if (a.scopes) body.scopes = a.scopes
-      if (a.role !== "none") {
-        if (!a.publicKey) throw new ToolRefusal("Refused: publicKey is required to grant access, because the key is sealed to it. Only role none works without it.")
-        const key = await openResourceKey(a.resourceType, a.resourceId)
-        try {
-          body.sealedKey = sealToPublicKey(key, new Uint8Array(Buffer.from(a.publicKey, "base64")))
-        } finally {
-          key.fill(0)
-        }
-      }
-      const op = KEY_OPS[a.resourceType]
-      return clean((await getClient().call<Record<string, unknown>>(op.attach, { params: { [op.param]: a.resourceId }, body })) ?? {})
+    run(async (a: { resourceType: ResourceType; resourceId: string; keyType: "client" | "passkey"; keyId: string; role: EntryRole; scopes?: Scope[]; publicKey?: string }) => {
+      if (a.keyType === "client" && !CLIENT_ID_RE.test(a.keyId)) throw new ToolRefusal("Refused: a client keyId is utc_ followed by 22 characters.")
+      if (a.role !== "none" && !a.publicKey) throw new ToolRefusal("Refused: publicKey is required to grant access, because the key is sealed to it. Only role none works without it.")
+      const input: AttachKeyInput = { keyType: a.keyType, keyId: a.keyId, role: a.role }
+      if (a.scopes) input.scopes = a.scopes
+      if (a.role !== "none") input.publicKey = a.publicKey
+      return clean(await getClient().keys.attach(ref(a.resourceType, a.resourceId), input))
     })
   )
 
@@ -465,11 +576,10 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     },
     run(async ({ resourceType: type, resourceId: id, entryId, role, scopes }: { resourceType: ResourceType; resourceId: string; entryId: string; role?: EntryRole; scopes?: Scope[] }) => {
       if (role === undefined && scopes === undefined) throw new ToolRefusal("Refused: give role, scopes or both.")
-      const op = KEY_OPS[type]
-      const body: Record<string, unknown> = {}
-      if (role !== undefined) body.role = role
-      if (scopes !== undefined) body.scopes = scopes
-      return clean((await getClient().call<Record<string, unknown>>(op.change, { params: { [op.param]: id, entryId }, body })) ?? {})
+      const change: { role?: EntryRole; scopes?: Scope[] } = {}
+      if (role !== undefined) change.role = role
+      if (scopes !== undefined) change.scopes = scopes
+      return clean(await getClient().keys.change(ref(type, id), entryId, change))
     })
   )
 
@@ -489,8 +599,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     },
     run(async ({ resourceType: type, resourceId: id, entryId, confirm }: { resourceType: ResourceType; resourceId: string; entryId: string; confirm: boolean }) => {
       if (confirm !== true) throw new ToolRefusal("Refused: removing a key cuts its access. Ask the user, then call again with confirm: true.")
-      const op = KEY_OPS[type]
-      const r = await getClient().call<Record<string, unknown>>(op.remove, { params: { [op.param]: id, entryId } })
+      const r = await getClient().keys.remove(ref(type, id), entryId)
       return { resourceType: type, resourceId: id, entryId, ...(r ?? {}) }
     })
   )

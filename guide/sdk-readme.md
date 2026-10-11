@@ -35,6 +35,8 @@ talks to your backend route, never to Untrace directly. Minimal apps for each pa
 3. The account that owns the key needs an active plan. Without one, Drive answers 402.
 4. Sign in to Drive at least once as the owner before the key uploads. That publishes the sharing key
    new files are sealed to.
+5. A key uploads only into a folder it has been added to. Create one with `untrace.folders.create`
+   (needs `upload`), or add the key to an existing folder in Drive.
 
 ```bash
 # server env only (never NEXT_PUBLIC_)
@@ -49,16 +51,50 @@ import { UntraceClient } from "@untracenetwork/sdk"
 
 const untrace = new UntraceClient() // reads UNTRACE_CLIENT_ID and UNTRACE_CLIENT_SECRET
 
-const { file, metering } = await untrace.files.upload({ data: bytes, name: "report.pdf", mime: "application/pdf" })
-const { files, nextCursor } = await untrace.files.list({ limit: 50 })
+const folder = await untrace.folders.create({ name: "Reports" }) // or pick one from folders.list()
+const { file, metering } = await untrace.files.upload({ folderId: folder.folderId, data: bytes, name: "report.pdf", mime: "application/pdf" })
+const { files, nextCursor } = await untrace.files.list({ folderId: folder.folderId, limit: 50 })
 for await (const f of untrace.files.listAll()) console.log(f.name)
 const { bytes: plain, name, mime } = await untrace.files.download(file.fileId)
 await untrace.files.rename(file.fileId, "report-final.pdf")
+await untrace.files.move(file.fileId, otherFolderId) // admin on the file and on the target
 await untrace.files.delete(file.fileId) // moves it to the trash
 ```
 
-`upload` takes a `Uint8Array`, an `ArrayBuffer` or a `Blob`. In this version one upload is at most
-16 MiB once encrypted. `metering` reports what was billed to the owner's plan.
+`upload` takes a `Uint8Array`, an `ArrayBuffer` or a `Blob`, and a required `folderId`. In this
+version one upload is at most 16 MiB once encrypted. `metering` reports what was billed to the owner's
+plan. Uploading into a folder the key was not added to (or only as `viewer`) throws
+`UntraceFolderAccessError`.
+
+### Folders, key entries and sharing
+
+```ts
+const { folders } = await untrace.folders.list() // top-level folders the key was added to
+const sub = await untrace.folders.create({ name: "Q3", parentId: folders[0].folderId })
+await untrace.folders.rename(sub.folderId, "Q3 2026")
+await untrace.folders.move(sub.folderId, otherFolderId) // or null for the top level (owner keys only)
+await untrace.folders.trash(sub.folderId)
+
+// Key entries: each one is a key a person holds, with a role and scopes (needs manage-sharing).
+const entries = await untrace.keys.list({ type: "folder", id: sub.folderId })
+await untrace.keys.attach({ type: "folder", id: sub.folderId }, {
+  keyType: "client", keyId: "utc_...", role: "viewer", scopes: ["download"],
+  publicKey: otherKeyBoxPublicKey, // that key's untrace.boxPublicKey()
+})
+await untrace.keys.change({ type: "folder", id: sub.folderId }, entryId, { role: "none" }) // a block
+
+// Sharing with another user: the key is sealed to their published, signed sharing key.
+await untrace.shares.offer({ resourceType: "folder", resourceId: sub.folderId, username: "their-username", role: "editor" })
+for (const s of await untrace.shares.incoming()) await untrace.shares.accept(s, { shareSecretKey })
+```
+
+Access resolves from the top folder down to the file: the nearest entry for your key wins, a block
+(`none`) included. A folder has its own X25519 key pair derived from a random folder key, and every
+subfolder and file in it carries its key sealed to the folder's public key. Drive answers with the key
+where your entry sits (`sealedKey`) and the `keyPath` below it; the SDK opens that path locally. Before
+it seals anything to a folder, the SDK opens the folder key itself and checks that the folder's public
+key matches it, so it never seals to a key the server picked. Nobody can attach a key in someone else's
+name: a share is only an offer until the recipient accepts it with their own key.
 
 Every operation in the contract is also reachable by its `operationId`:
 
@@ -66,8 +102,8 @@ Every operation in the contract is also reachable by its `operationId`:
 const shareKey = await untrace.call("getOwnerShareKey")
 ```
 
-Operations marked `planned` in the contract (folders, key entries, sharing) throw
-`UntracePlannedError` until Drive ships them. `OPERATIONS` lists every operation with its status.
+`OPERATIONS` lists every operation with its status. Every operation in this contract is `live`. An
+operation a future contract marks `planned` throws `UntracePlannedError` until Drive serves it.
 
 ## 3. Next.js
 
@@ -83,25 +119,28 @@ import { auth } from "@/auth" // your own session check
 
 export const { GET, POST } = createUntraceRoute({
   authorize: async () => Boolean(await auth()), // required: the route is public otherwise
-  allow: ["list", "get", "download", "upload"], // read-only by default
+  allow: ["list", "get", "download", "folders", "folder", "upload"], // read-only by default
 })
 export const runtime = "nodejs"
 ```
 
-Server actions: `untraceActions.listFiles()`, `getFile()`, `uploadFromForm(formData)`, `renameFile()`,
-`deleteFile()`. Wrap them in your own `"use server"` functions after checking the session.
+Server actions: `untraceActions.listFiles(cursor, limit, folderId)`, `listFolders(parentId)`,
+`createFolder(name, parentId)`, `getFile()`, `uploadFromForm(formData)` (reads a `folderId` field, or
+pass it as the third argument), `renameFile()`, `moveFile()`, `deleteFile()`. Wrap them in your own `"use server"` functions after checking the session.
 `getUntrace()` returns one shared client per server process. See [`examples/next`](./examples/next).
 
 ## 4. React and Vue
 
 ```tsx
-import { UntraceProvider, useUntraceFiles, useUntraceUpload } from "@untracenetwork/react"
+import { UntraceProvider, useUntraceFiles, useUntraceFolders, useUntraceUpload } from "@untracenetwork/react"
 
 <UntraceProvider endpoint="/api/untrace"><Files /></UntraceProvider>
+// in Files: const { folders } = useUntraceFolders(); const { files } = useUntraceFiles(folderId)
+// const { upload } = useUntraceUpload(); await upload(file, folderId)
 ```
 
 ```ts
-import { untracePlugin, useUntraceFiles, useUntraceUpload } from "@untracenetwork/vue"
+import { untracePlugin, useUntraceFiles, useUntraceFolders, useUntraceUpload } from "@untracenetwork/vue"
 
 app.use(untracePlugin, { endpoint: "/api/untrace" })
 ```
@@ -113,15 +152,26 @@ for any server. One route:
 
 | Request | Answer |
 |---|---|
-| `GET ?action=list[&cursor=&limit=]` | `{ files, nextCursor }` |
+| `GET ?action=list[&folderId=&cursor=&limit=]` | `{ files, nextCursor }` |
 | `GET ?action=get&fileId=` | file metadata, no key material |
 | `GET ?action=download&fileId=` | the decrypted bytes |
-| `POST ?action=upload`, multipart `file[, name]` | `{ file }` |
+| `GET ?action=folders[&parentId=&cursor=&limit=]` | `{ folders, nextCursor }`, no key material |
+| `GET ?action=folder&folderId=` | folder metadata, no key material |
+| `POST ?action=upload&folderId=`, multipart `file[, name]` | `{ file }` |
 | `POST ?action=rename&fileId=`, JSON `{ name }` | `{ fileId, name }` |
+| `POST ?action=move&fileId=`, JSON `{ folderId }` | `{ fileId, name, folderId }` |
 | `POST ?action=delete&fileId=`, JSON `{}` | `{ fileId, trashed }` |
+| `POST ?action=create-folder[&parentId=]`, JSON `{ name }` | folder |
+| `POST ?action=rename-folder&folderId=`, JSON `{ name }` | folder |
+| `POST ?action=move-folder&folderId=`, JSON `{ parentId }` | folder |
+| `POST ?action=trash-folder&folderId=`, JSON `{}` | `{ removed }` |
+| `POST ?action=share`, JSON `{ resourceType, resourceId, username, role }` | the share offer |
 
-- `authorize(request, action, fileId)` is required and runs before any body is read.
-- Only `list`, `get` and `download` are enabled by default. Opt in to writes with `allow`.
+- `authorize(request, action, fileId, { fileId, folderId, parentId })` is required and runs before any
+  body is read. The ids come from the query string; a body may not override them. The targets of
+  `move`, `move-folder` and `share` are in the body: read `request.clone().json()` in `authorize` if
+  you need to check them.
+- Only `list`, `get`, `download`, `folders` and `folder` are enabled by default. Opt in to writes with `allow`.
 - Every POST needs `x-untrace-request: 1` and a JSON content type (multipart for upload), which a
   cross-site form cannot send. Cross-site and foreign-origin requests are refused unless listed in
   `allowedOrigins`. Keep your session cookie `SameSite=Lax` or `Strict` as a second layer.
@@ -131,11 +181,12 @@ for any server. One route:
 | Scope | Allows |
 |---|---|
 | `download` | read files the key can reach |
-| `upload` | upload new files, billed to the owner's plan |
-| `delete` | move files to the trash where the key is `admin` |
-| `manage-sharing` | manage key entries and shares (planned) |
+| `upload` | upload new files and create folders, billed to the owner's plan |
+| `delete` | move files and folders to the trash where the key is `admin` |
+| `manage-sharing` | manage key entries and offer shares where the key is `admin` |
 
-A key that uploads a file becomes its `editor`. A file the key cannot reach answers 404, the same as a
+Roles are `owner`, `admin`, `editor` and `viewer`; `none` on an entry is a block. A key that uploads a
+file becomes its `editor`. The owner's keys can never be changed or removed (409 `owner_immutable`). A file the key cannot reach answers 404, the same as a
 file that does not exist. Pass `scope` to `UntraceClient` to ask for fewer scopes than the key holds.
 
 ## Errors
@@ -147,13 +198,14 @@ Every error is an `UntraceError` with `status`, `code`, `retryable` and a redact
 | `UntraceAuthError` | 401 `invalid_client` or `token_expired` (the SDK refreshes once for you) |
 | `UntraceScopeError` | 403 `insufficient_scope` or 400 `invalid_scope`; `required` names the scope |
 | `UntraceRoleError` | 403 `insufficient_role` |
+| `UntraceFolderAccessError` | 403 `folder_access_required`: upload into a folder the key can write to |
 | `UntraceNotFoundError` | 404 |
 | `UntracePaymentRequiredError` | 402: the owner's plan does not allow it; `planCode` says why |
-| `UntraceConflictError` | 409 `conflict`, `owner_immutable`, `unsupported_format` (a file made in the Drive app) |
+| `UntraceConflictError` | 409 `conflict` (for example a folder moved inside itself), `owner_immutable`, `unsupported_format` (a file made in the Drive app) |
 | `UntraceTooLargeError` | 413, or refused locally before sending |
 | `UntraceRateLimitError` | 429; `retryAfterSeconds` |
 | `UntraceUnavailableError`, `UntraceTimeoutError` | 503, network, timeout: retry with backoff |
-| `UntraceIntegrityError` | a sealed key, a signature or the ciphertext failed a local check |
+| `UntraceIntegrityError` | a sealed key, a key path, a signature, a folder public key or the ciphertext failed a local check |
 | `UntracePlannedError` | the operation is planned and not served yet |
 | `UntraceAbortError` | your `AbortSignal` fired |
 
@@ -172,6 +224,7 @@ are. A network failure on an upload is not retried, so a file is never stored tw
 
 - Keep `UNTRACE_CLIENT_SECRET` on the server. The client keeps it in a private field and never prints
   it; error messages and bodies are redacted.
+
 ## Contract and generated types
 
 `contract/openapi.yaml` is a byte copy of untrace-drive `docs/api/openapi.yaml`, and

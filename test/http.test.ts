@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { createHttpApp, listen, pkceMatches, safeEqual, type HttpOptions } from "../src/http"
 import type { UntraceLike } from "../src/server"
-import { KEY, mockClient } from "./helpers"
+import { FOLDER_ID, KEY, mockClient } from "./helpers"
 
 const CONNECTOR_SECRET = "c0nnector-secret-0123456789abcdefghijklmnop"
 const CLAUDE = "https://claude.ai/api/mcp/auth_callback"
@@ -213,14 +213,14 @@ describe("MCP over HTTP", () => {
     expect(r0.status).toBe(200)
     expect((await r0.json()).result.serverInfo.name).toBe("untrace-mcp")
     const r1 = await (await rpc(t.access_token, { jsonrpc: "2.0", id: 2, method: "tools/list" })).json()
-    expect(r1.result.tools).toHaveLength(13)
+    expect(r1.result.tools).toHaveLength(21)
     const r2 = await (await rpc(t.access_token, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "untrace_whoami", arguments: {} } })).json()
     expect(JSON.parse(r2.result.content[0].text).clientId).toBe(KEY)
   })
 
   it("local paths are off on the HTTP server", async () => {
     const t = await getTokens()
-    const r = await (await rpc(t.access_token, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "untrace_upload_file", arguments: { path: "etc/passwd" } } })).json()
+    const r = await (await rpc(t.access_token, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "untrace_upload_file", arguments: { folderId: FOLDER_ID, path: "etc/passwd" } } })).json()
     expect(r.result.isError).toBe(true)
     expect(r.result.content[0].text).toMatch(/local paths are turned off/)
   })

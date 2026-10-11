@@ -31,5 +31,7 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
   if (s) out.push(s, s.startsWith(CLIENT_SECRET_PREFIX) ? s.slice(CLIENT_SECRET_PREFIX.length) : s)
   const c = env.UNTRACE_MCP_OAUTH_CLIENT_SECRET?.trim()
   if (c) out.push(c)
+  const k = env.UNTRACE_SHARE_SECRET_KEY?.trim()
+  if (k) out.push(k)
   return out
 }

@@ -37,23 +37,23 @@ Browser code never receives `UNTRACE_CLIENT_SECRET`.
 
 ## MCP path for agents
 
-The server acts as one developer key. It reaches only the folders and files where that key holds a key entry (role admin, editor or viewer; `none` blocks). The owner can never be removed.
+The server acts as one developer key. It reaches only the folders and files where that key holds a key entry (role admin, editor or viewer; `none` blocks). The owner can never be removed. Every file lives in a folder: uploads need a `folderId` the key was added to as editor or admin (or a folder it made with `untrace_create_folder`).
 
 Environment: `UNTRACE_CLIENT_ID`, `UNTRACE_CLIENT_SECRET`, optional `UNTRACE_MCP_ROOT` (the only local folder it reads and writes).
 
 Useful examples:
 
 - "List my Untrace folders, then download the latest NDA to ./safe/nda.pdf."
-- "Upload ./passport.pdf and give me the new file id."
+- "Upload ./passport.pdf into my Identity folder and give me the new file id."
 - "Share the Contracts folder with username alice-legal as viewer."
 - "Guide me through adding Untrace to my Next.js app without exposing the client secret."
 
 Rules:
 
 - A `not_found` means the item does not exist or this key cannot reach it. Ask an admin to attach the key (`untrace_whoami` shows its id and public key).
-- Deleting a file or removing a key needs `confirm: true`. Ask the user first.
-- Sharing with a person is an offer: they accept in Drive with their own key.
-- A `planned` answer means this Drive does not offer that operation yet. Nothing changed.
+- A `folder_access_required` means the key was not added to that folder. Pick another folder, create one, or ask an admin to add the key.
+- Deleting a file, trashing a folder or removing a key needs `confirm: true`. Ask the user first.
+- Sharing with a person is an offer: they accept with their own key.
 
 ## Keep context small
 

@@ -28,14 +28,14 @@ automatically before build, typecheck and test. `src/generated/` is not committe
 - `src/guide.ts`, `guide/sdk-readme.md`: `untrace_setup_guide`. `guide/sdk-readme.md` is the
   untrace-sdk README without its "How ... works" internals notes and with the secret shown as a
   placeholder. Refresh it when the SDK README changes.
-- `test/`: one file per concern. `test/mock-drive.ts` is a mock Drive API v1 the real SDK runs
-  against. `test/release.test.ts` pins the workflow and copy rules.
+- `test/`: one file per concern. `test/mock-drive.ts` is the SDK's contract mock of Drive API v1
+  (copied from untrace-sdk `packages/core/test/mock-drive.ts`), which the real SDK runs against. `test/release.test.ts` pins the workflow and copy rules.
 
 ## SDK dependency
 
 `package.json` depends on `@untracenetwork/sdk` `^2.0.0` and must stay that way. Until 2.0.0 is on
-npm, CI installs a tarball of the SDK's `packages/core` built from `untrace-sdk@feat/oauth-option-b`
-(`ci/vendor/`, sha256 checked by `ci/use-vendored-sdk.mjs`, wired by `ci/install.sh`). That path is
+npm, CI installs a tarball of the SDK's `packages/core` built from untrace-sdk main `ceb6ea4`
+(PR #7, typed from Drive main `1b18365`) (`ci/vendor/`, sha256 checked by `ci/use-vendored-sdk.mjs`, wired by `ci/install.sh`). That path is
 CI only, and `package.json` is restored before build and tests. Delete `ci/vendor/`,
 `ci/use-vendored-sdk.mjs`, `ci/local-install.sh` and the fallback branch of `ci/install.sh` once
 the SDK is published.
@@ -43,7 +43,8 @@ the SDK is published.
 ## Rules
 
 - The MCP server does no cryptography. The SDK encrypts, seals and opens keys; this repo only
-  passes keys between SDK calls and zeroes them after use. `scripts/check-public.mjs` enforces it.
+  calls the SDK's typed APIs (files, folders, keys, shares) and zeroes the one key it holds (the
+  optional sharing secret) after use. `scripts/check-public.mjs` enforces it.
 - Never accept a secret as a tool argument, never log or return one.
 - A developer key is a key, never a user. The owner is never changed or removed. Unknown and
   unreachable both answer `not_found`.

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // CI ONLY. @untracenetwork/sdk 2.0.0 is not on npm yet, and untracenetwork/untrace-sdk is a
 // private repo the default GITHUB_TOKEN of this repo cannot check out. Until the SDK is
-// published, CI installs a tarball of packages/core built from untrace-sdk@feat/oauth-option-b
-// (2579596, PR untrace-sdk#7), committed at ci/vendor/. This script checks its sha256 and points the
+// published, CI installs a tarball of packages/core built from untrace-sdk main ceb6ea4 (PR
+// untrace-sdk#7, same tree as feat/oauth-option-b f13d80c, typed from Drive main 1b18365),
+// committed at ci/vendor/. This script checks its sha256 and points the
 // dependency at it for the CI install only. The published package.json keeps "^2.0.0"
 // (test/release.test.ts and scripts/check-pack.mjs enforce that).
 //
@@ -12,7 +13,7 @@ import { createHash } from "node:crypto"
 import { readFileSync, writeFileSync } from "node:fs"
 
 const TARBALL = "ci/vendor/untracenetwork-sdk-2.0.0.tgz"
-const SHA256 = "964e6377bd7e6d2adb820aabf2079601ae2f2c76561d9598d6f0ad51d5d2aee4"
+const SHA256 = "a52b6125482c8a77bba9813d029dc0ac11102e16bbad5e2b12728e6ab4a6881f"
 
 if (!process.env.CI) {
   console.error("use-vendored-sdk: CI only. Locally, install @untracenetwork/sdk from npm (or npm link a checkout).")
