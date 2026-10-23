@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { resolveInsideRoot } from "../src/paths"
-import { FILE_ID, harness } from "./helpers"
+import { FILE_ID, FOLDER_ID, harness } from "./helpers"
 
 type H = Awaited<ReturnType<typeof harness>>
 let h: H
@@ -22,26 +22,26 @@ afterEach(async () => {
 
 describe("path sandbox (UNTRACE_MCP_ROOT)", () => {
   it.each(["../secret.txt", "../../etc/passwd", "a/../../x", "/etc/passwd"])("upload refuses %s", async (p) => {
-    const r = await h.call("untrace_upload_file", { path: p })
+    const r = await h.call("untrace_upload_file", { folderId: FOLDER_ID, path: p })
     expect(r.isError).toBe(true)
     expect(r.text).toMatch(/^path_refused:/)
     expect(h.client.files.upload).not.toHaveBeenCalled()
   })
 
   it("upload refuses an absolute path outside the root", async () => {
-    const r = await h.call("untrace_upload_file", { path: join(outside, "secret.txt") })
+    const r = await h.call("untrace_upload_file", { folderId: FOLDER_ID, path: join(outside, "secret.txt") })
     expect(r.text).toMatch(/^path_refused:.*outside the allowed folder/s)
   })
 
   it("upload accepts an absolute path inside the root", async () => {
     await h.write("in.txt", "hi")
-    const r = await h.call("untrace_upload_file", { path: join(h.root, "in.txt") })
+    const r = await h.call("untrace_upload_file", { folderId: FOLDER_ID, path: join(h.root, "in.txt") })
     expect(r.isError).toBe(false)
   })
 
   it("upload refuses a symlink that points outside the root", async () => {
     await h.symlink(join(outside, "secret.txt"), "link.txt")
-    const r = await h.call("untrace_upload_file", { path: "link.txt" })
+    const r = await h.call("untrace_upload_file", { folderId: FOLDER_ID, path: "link.txt" })
     expect(r.text).toMatch(/^path_refused:.*symlink/s)
     expect(h.client.files.upload).not.toHaveBeenCalled()
   })

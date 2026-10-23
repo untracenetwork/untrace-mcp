@@ -1,51 +1,111 @@
 # untrace-sdk
 
-JavaScript SDK for Untrace Drive developer keys. Your server holds a client id and secret,
-reads and uploads files the key is a member of, and manages that file's other keys.
+JavaScript SDK for the Untrace Drive API v1. Thin, typed wrappers over the API, generated from the
+Drive OpenAPI contract.
 
-Files are encrypted before they leave your server and stored as 6 encrypted shards. Any 3
-rebuild the file. File keys are sealed to your key and opened locally, so Untrace never
-sees a plaintext key.
+Your server holds a client id and a client secret. Files are encrypted on your machine before they
+are sent, with one standard step (AES-256-GCM). Drive stores the ciphertext in 6 regions, and any 3
+recover it. The file key is sealed to your key and to the account owner's key, so only those keys
+can open it. We cannot read your files.
 
 | Package | Use it for |
 |---|---|
-| `@untracenetwork/next` | Next.js route handler and server actions (recommended) |
 | `@untracenetwork/sdk` | The core client for any server runtime (Node 20+, Bun, Deno, Workers) |
-| `@untracenetwork/node` | File path and stream helpers, node:http / Express adapter |
+| `@untracenetwork/next` | Next.js route handler and server actions |
 | `@untracenetwork/react` | Hooks that call your own backend route |
 | `@untracenetwork/vue` | Composables that call your own backend route |
 
-Install only what you use:
-
 ```bash
-npm i @untracenetwork/next    # Next.js (pulls in @untracenetwork/sdk)
 npm i @untracenetwork/sdk     # any server runtime
-npm i @untracenetwork/node    # Node path and stream helpers
+npm i @untracenetwork/next    # Next.js (pulls in @untracenetwork/sdk)
 npm i @untracenetwork/react   # React hooks, browser side
 npm i @untracenetwork/vue     # Vue composables, browser side
 ```
 
-The client secret is server-only. `UntraceClient` refuses to start in a browser. React and Vue
-code talks to your backend route, never to Untrace directly.
+The client secret is server-only. `UntraceClient` refuses to start in a browser. React and Vue code
+talks to your backend route, never to Untrace directly. Minimal apps for each package are in
+[`examples/`](./examples).
 
 ## 1. Create a key in Drive
 
-1. Open Untrace Drive, then **Settings > Developer keys**, and create a key. Pick its scopes.
-2. Copy the **client id** (`utc_...`) and the **client secret** (`untrace_sk_v1_...`). The secret is
+1. Open Untrace Drive, then **Settings > Developer keys**, and create a key. Pick its scopes:
+   `download`, `upload`, `delete`, `manage-sharing`.
+2. Copy the **client id** (`utc_...`) and the **client secret** (shown in Drive). The secret is
    shown once. Untrace does not keep it. If you lose it, revoke the key and create a new one.
-3. A key can only see files it is a member of. Open a file's sharing panel in Drive, add the key
-   as a member and choose a role: `admin`, `editor` or `viewer`. Files the key uploads itself are
-   added for you (as `editor`).
-4. Sign in to Drive at least once as the owner before the key uploads. That publishes the sharing
-   key new files are sealed to.
+3. The account that owns the key needs an active plan. Without one, Drive answers 402.
+4. Sign in to Drive at least once as the owner before the key uploads. That publishes the sharing key
+   new files are sealed to.
+5. A key uploads only into a folder it has been added to. Create one with `untrace.folders.create`
+   (needs `upload`), or add the key to an existing folder in Drive.
 
 ```bash
-# .env.local (server only, never NEXT_PUBLIC_)
+# server env only (never NEXT_PUBLIC_)
 UNTRACE_CLIENT_ID=utc_...
-UNTRACE_CLIENT_SECRET=untrace_sk_v1_...
+UNTRACE_CLIENT_SECRET=<client secret>
 ```
 
-## 2. Next.js quick start
+## 2. Core client
+
+```ts
+import { UntraceClient } from "@untracenetwork/sdk"
+
+const untrace = new UntraceClient() // reads UNTRACE_CLIENT_ID and UNTRACE_CLIENT_SECRET
+
+const folder = await untrace.folders.create({ name: "Reports" }) // or pick one from folders.list()
+const { file, metering } = await untrace.files.upload({ folderId: folder.folderId, data: bytes, name: "report.pdf", mime: "application/pdf" })
+const { files, nextCursor } = await untrace.files.list({ folderId: folder.folderId, limit: 50 })
+for await (const f of untrace.files.listAll()) console.log(f.name)
+const { bytes: plain, name, mime } = await untrace.files.download(file.fileId)
+await untrace.files.rename(file.fileId, "report-final.pdf")
+await untrace.files.move(file.fileId, otherFolderId) // admin on the file and on the target
+await untrace.files.delete(file.fileId) // moves it to the trash
+```
+
+`upload` takes a `Uint8Array`, an `ArrayBuffer` or a `Blob`, and a required `folderId`. In this
+version one upload is at most 16 MiB once encrypted. `metering` reports what was billed to the owner's
+plan. Uploading into a folder the key was not added to (or only as `viewer`) throws
+`UntraceFolderAccessError`.
+
+### Folders, key entries and sharing
+
+```ts
+const { folders } = await untrace.folders.list() // top-level folders the key was added to
+const sub = await untrace.folders.create({ name: "Q3", parentId: folders[0].folderId })
+await untrace.folders.rename(sub.folderId, "Q3 2026")
+await untrace.folders.move(sub.folderId, otherFolderId) // or null for the top level (owner keys only)
+await untrace.folders.trash(sub.folderId)
+
+// Key entries: each one is a key a person holds, with a role and scopes (needs manage-sharing).
+const entries = await untrace.keys.list({ type: "folder", id: sub.folderId })
+await untrace.keys.attach({ type: "folder", id: sub.folderId }, {
+  keyType: "client", keyId: "utc_...", role: "viewer", scopes: ["download"],
+  publicKey: otherKeyBoxPublicKey, // that key's untrace.boxPublicKey()
+})
+await untrace.keys.change({ type: "folder", id: sub.folderId }, entryId, { role: "none" }) // a block
+
+// Sharing with another user: the key is sealed to their published, signed sharing key.
+await untrace.shares.offer({ resourceType: "folder", resourceId: sub.folderId, username: "their-username", role: "editor" })
+for (const s of await untrace.shares.incoming()) await untrace.shares.accept(s, { shareSecretKey })
+```
+
+Access resolves from the top folder down to the file: the nearest entry for your key wins, a block
+(`none`) included. A folder has its own X25519 key pair derived from a random folder key, and every
+subfolder and file in it carries its key sealed to the folder's public key. Drive answers with the key
+where your entry sits (`sealedKey`) and the `keyPath` below it; the SDK opens that path locally. Before
+it seals anything to a folder, the SDK opens the folder key itself and checks that the folder's public
+key matches it, so it never seals to a key the server picked. Nobody can attach a key in someone else's
+name: a share is only an offer until the recipient accepts it with their own key.
+
+Every operation in the contract is also reachable by its `operationId`:
+
+```ts
+const shareKey = await untrace.call("getOwnerShareKey")
+```
+
+`OPERATIONS` lists every operation with its status. Every operation in this contract is `live`. An
+operation a future contract marks `planned` throws `UntracePlannedError` until Drive serves it.
+
+## 3. Next.js
 
 ```bash
 npm install @untracenetwork/next @untracenetwork/react
@@ -57,305 +117,144 @@ npm install @untracenetwork/next @untracenetwork/react
 import { createUntraceRoute } from "@untracenetwork/next"
 import { auth } from "@/auth" // your own session check
 
-export const runtime = "nodejs"
-
 export const { GET, POST } = createUntraceRoute({
-  // Required: decide who may call this route. It is public otherwise.
-  authorize: async (_request, action, fileId) => Boolean(await auth()),
-  // Read-only by default. Opt in to writes.
-  allow: ["list", "get", "download", "upload"],
+  authorize: async () => Boolean(await auth()), // required: the route is public otherwise
+  allow: ["list", "get", "download", "folders", "folder", "upload"], // read-only by default
 })
+export const runtime = "nodejs"
 ```
 
-A client component:
-
-```tsx
-"use client"
-import { UntraceProvider, useUntraceFiles, useUntraceUpload, useUntrace } from "@untracenetwork/react"
-
-export default function Files() {
-  return (
-    <UntraceProvider endpoint="/api/untrace">
-      <List />
-    </UntraceProvider>
-  )
-}
-
-function List() {
-  const { files, loading, refresh } = useUntraceFiles()
-  const { upload, uploading } = useUntraceUpload()
-  const api = useUntrace()
-  if (loading) return <p>Loading</p>
-  return (
-    <>
-      <input type="file" disabled={uploading} onChange={async (e) => {
-        const f = e.target.files?.[0]
-        if (f) { await upload(f); await refresh() }
-      }} />
-      <ul>{files.map((f) => <li key={f.fileId}><a href={api.downloadUrl(f.fileId)}>{f.name}</a></li>)}</ul>
-    </>
-  )
-}
-```
-
-Server actions:
-
-```ts
-"use server"
-import { untraceActions, getUntrace } from "@untracenetwork/next"
-
-export async function listFiles() {
-  await requireUser()
-  return untraceActions.listFiles()
-}
-
-export async function uploadAction(form: FormData) {
-  await requireUser()
-  return untraceActions.uploadFromForm(form) // <input type="file" name="file">
-}
-
-// Or the full client:
-export async function readReport(fileId: string) {
-  const { bytes, name } = await getUntrace().files.download(fileId)
-  return { name, text: new TextDecoder().decode(bytes) }
-}
-```
-
-## 3. Node.js
-
-```ts
-import { UntraceClient } from "@untracenetwork/sdk"
-import { uploadPath, downloadToPath, untraceNodeHandler } from "@untracenetwork/node"
-
-const untrace = new UntraceClient() // reads UNTRACE_CLIENT_ID / UNTRACE_CLIENT_SECRET
-
-const { files } = await untrace.files.list()
-const up = await uploadPath(untrace, "./report.pdf")
-await downloadToPath(untrace, up.fileId, "./copy.pdf")
-
-// Express: serve the same route protocol for @untracenetwork/react or @untracenetwork/vue
-app.all("/api/untrace", untraceNodeHandler({ authorize: (req) => isLoggedIn(req) }))
-```
-
-`untraceNodeHandler` builds the `Request` URL as `http://` + the client's `Host` header. Do not trust
-`request.url`'s host or scheme inside `authorize`; check your session instead.
-
-The core API:
-
-```ts
-untrace.files.list({ cursor, limit })        // files the key is a member of
-untrace.files.get(fileId)                    // metadata and the key's role
-untrace.files.download(fileId)               // { bytes, name, mime, nodesChosen }
-untrace.files.upload({ data, name, mime })   // new file in the owner's drive, max 95 MB
-untrace.files.rename(fileId, name)
-untrace.files.delete(fileId)                 // to the trash; only the owner restores or purges
-untrace.members.list(fileId)                 // { owner, members }
-untrace.members.add(fileId, clientId, role)  // seals the file key to that key locally
-untrace.members.setRole(fileId, clientId, role)
-untrace.members.remove(fileId, clientId)
-```
+Server actions: `untraceActions.listFiles(cursor, limit, folderId)`, `listFolders(parentId)`,
+`createFolder(name, parentId)`, `getFile()`, `uploadFromForm(formData)` (reads a `folderId` field, or
+pass it as the third argument), `renameFile()`, `moveFile()`, `deleteFile()`. Wrap them in your own `"use server"` functions after checking the session.
+`getUntrace()` returns one shared client per server process. See [`examples/next`](./examples/next).
 
 ## 4. React and Vue
 
-Both call your backend route (`createUntraceRoute`, `createUntraceHandler` from
-`@untracenetwork/sdk/backend`, or `untraceNodeHandler`).
+```tsx
+import { UntraceProvider, useUntraceFiles, useUntraceFolders, useUntraceUpload } from "@untracenetwork/react"
+
+<UntraceProvider endpoint="/api/untrace"><Files /></UntraceProvider>
+// in Files: const { folders } = useUntraceFolders(); const { files } = useUntraceFiles(folderId)
+// const { upload } = useUntraceUpload(); await upload(file, folderId)
+```
+
+```ts
+import { untracePlugin, useUntraceFiles, useUntraceFolders, useUntraceUpload } from "@untracenetwork/vue"
+
+app.use(untracePlugin, { endpoint: "/api/untrace" })
+```
 
 ### Route protocol and CSRF
 
-The route's writes are protected against cross-site request forgery, which matters when
-`authorize` trusts a session cookie:
+`createUntraceHandler` (from `@untracenetwork/sdk/backend`) is a Web `Request` to `Response` handler
+for any server. One route:
 
-- The action and `fileId` travel in the query string (`POST /api/untrace?action=delete&fileId=...`).
-  `authorize(request, action, fileId)` runs on the URL and headers **before the body is read**, so an
-  unauthorised caller never gets a body parsed. JSON bodies are capped at 64 KB, uploads at 96 MB (413).
-- Every POST must send `x-untrace-request: 1` and `content-type: application/json` (`multipart/form-data`
-  for upload). Anything else gets 403 or 415. A cross-site HTML form cannot set either.
-- Browser POSTs with `Sec-Fetch-Site` other than `same-origin`, or an `Origin` whose host is not the
-  route's host, get 403. To accept a named other origin, pass `allowedOrigins: ["https://admin.example.com"]`
-  (the handler does not answer CORS preflights; add your own CORS layer for that).
-- Reads are GET only, writes are POST only.
+| Request | Answer |
+|---|---|
+| `GET ?action=list[&folderId=&cursor=&limit=]` | `{ files, nextCursor }` |
+| `GET ?action=get&fileId=` | file metadata, no key material |
+| `GET ?action=download&fileId=` | the decrypted bytes |
+| `GET ?action=folders[&parentId=&cursor=&limit=]` | `{ folders, nextCursor }`, no key material |
+| `GET ?action=folder&folderId=` | folder metadata, no key material |
+| `POST ?action=upload&folderId=`, multipart `file[, name]` | `{ file }` |
+| `POST ?action=rename&fileId=`, JSON `{ name }` | `{ fileId, name }` |
+| `POST ?action=move&fileId=`, JSON `{ folderId }` | `{ fileId, name, folderId }` |
+| `POST ?action=delete&fileId=`, JSON `{}` | `{ fileId, trashed }` |
+| `POST ?action=create-folder[&parentId=]`, JSON `{ name }` | folder |
+| `POST ?action=rename-folder&folderId=`, JSON `{ name }` | folder |
+| `POST ?action=move-folder&folderId=`, JSON `{ parentId }` | folder |
+| `POST ?action=trash-folder&folderId=`, JSON `{}` | `{ removed }` |
+| `POST ?action=share`, JSON `{ resourceType, resourceId, username, role }` | the share offer |
 
-`@untracenetwork/react` and `@untracenetwork/vue` already send all of this. If you call the route yourself, send the
-header. Server-to-server callers (no `Origin`) only need the header and the content type. Keep your
-session cookie `SameSite=Lax` or `Strict` as a second layer.
-
-```ts
-// Vue
-import { createApp } from "vue"
-import { untracePlugin, useUntraceFiles, useUntraceUpload } from "@untracenetwork/vue"
-
-createApp(App).use(untracePlugin, { endpoint: "/api/untrace" })
-
-// in a component
-const { files, loading, refresh } = useUntraceFiles()
-const { upload, uploading } = useUntraceUpload()
-```
+- `authorize(request, action, fileId, { fileId, folderId, parentId })` is required and runs before any
+  body is read. The ids come from the query string; a body may not override them. The targets of
+  `move`, `move-folder` and `share` are in the body: read `request.clone().json()` in `authorize` if
+  you need to check them.
+- Only `list`, `get`, `download`, `folders` and `folder` are enabled by default. Opt in to writes with `allow`.
+- Every POST needs `x-untrace-request: 1` and a JSON content type (multipart for upload), which a
+  cross-site form cannot send. Cross-site and foreign-origin requests are refused unless listed in
+  `allowedOrigins`. Keep your session cookie `SameSite=Lax` or `Strict` as a second layer.
 
 ## Scopes and roles
 
-A call is allowed only when the key's **scopes** and its **role on that file** both allow it.
-
 | Scope | Allows |
 |---|---|
-| `download` | Open files the key is a member of |
-| `upload` | Create new files in the owner's drive (billed to the owner) |
-| `manage-sharing` | Add, change and remove other keys on files where the key is `admin` |
-| `delete` | Move files to the trash where the key is `admin` |
+| `download` | read files the key can reach |
+| `upload` | upload new files and create folders, billed to the owner's plan |
+| `delete` | move files and folders to the trash where the key is `admin` |
+| `manage-sharing` | manage key entries and offer shares where the key is `admin` |
 
-| Permission | owner | admin | editor | viewer |
-|---|---|---|---|---|
-| download | yes | yes | yes | yes |
-| rename | yes | yes | yes | no |
-| manage members (except the owner) | yes | yes | no | no |
-| delete (to trash) | yes | yes | no | no |
-| restore, purge | yes | no | no | no |
-
-- The owner can never be granted, changed or removed (`UntraceOwnerImmutableError`, HTTP 409).
-- A file the key is not a member of answers 404, the same as a file that does not exist.
-- Members are other developer keys of the same owner. Sharing with people stays in Drive.
-
-## Metering
-
-Uploads by a key count against the **owner's** plan. Upload registration and finalize return:
-
-```ts
-const r = await untrace.files.upload({ data, name: "a.pdf" })
-r.metering // { billedTo: "owner", meteredBytes, usageBytes, quotaBytes, unlimited, clientId }
-```
-
-Other calls have no billing headers, so `meta.metering` is `null` there. `meta.rateLimit` gives
-`{ limit, remaining, reset }` (600 requests per minute per key).
+Roles are `owner`, `admin`, `editor` and `viewer`; `none` on an entry is a block. A key that uploads a
+file becomes its `editor`. The owner's keys can never be changed or removed (409 `owner_immutable`). A file the key cannot reach answers 404, the same as a
+file that does not exist. Pass `scope` to `UntraceClient` to ask for fewer scopes than the key holds.
 
 ## Errors
 
-| Class | When | Retry? |
-|---|---|---|
-| `UntraceUnavailableError` | 503, network failure | yes, with backoff (`err.retryable`) |
-| `UntraceTimeoutError` | no answer within `timeoutMs` | yes |
-| `UntraceAbortError` | your `signal` fired | no |
-| `UntraceUploadError` | some shards could not be stored (`failedNodes`); the upload was not finalized or billed | retry the whole upload |
-| `UntraceFinalizeUnknownError` | the network failed during finalize and Drive could not be asked whether the file was committed (`fileId`) | **do not re-upload**: `files.get(err.fileId)` later, 200 means it is in the drive, 404 means it is not |
-| `UntraceRateLimitError` | 429 (`retryAfterSeconds`) | yes |
-| `UntraceAuthError` | unknown or revoked key, bad signature | no |
-| `UntraceScopeError` | key scopes do not allow it (`required`) | no |
-| `UntraceRoleError` | role on this file does not allow it | no |
-| `UntraceNotFoundError` | no such file, or the key is not a member | no |
-| `UntraceOwnerImmutableError` | tried to change the owner | no |
-| `UntraceConflictError` | duplicate member, or the owner has not signed in to Drive yet | no |
-| `UntracePaymentRequiredError` | the owner's plan blocks the upload | no |
-| `UntraceServerError` / `UntraceUnsupportedError` | 500 / 501 | no |
-| `UntraceIntegrityError` | a key, signature or shard failed a local check | no |
+Every error is an `UntraceError` with `status`, `code`, `retryable` and a redacted `message`.
 
-Expired access tokens (15 minutes) are refreshed automatically. Concurrent calls share one refresh.
+| Class | When |
+|---|---|
+| `UntraceAuthError` | 401 `invalid_client` or `token_expired` (the SDK refreshes once for you) |
+| `UntraceScopeError` | 403 `insufficient_scope` or 400 `invalid_scope`; `required` names the scope |
+| `UntraceRoleError` | 403 `insufficient_role` |
+| `UntraceFolderAccessError` | 403 `folder_access_required`: upload into a folder the key can write to |
+| `UntraceNotFoundError` | 404 |
+| `UntracePaymentRequiredError` | 402: the owner's plan does not allow it; `planCode` says why |
+| `UntraceConflictError` | 409 `conflict` (for example a folder moved inside itself), `owner_immutable`, `unsupported_format` (a file made in the Drive app) |
+| `UntraceTooLargeError` | 413, or refused locally before sending |
+| `UntraceRateLimitError` | 429; `retryAfterSeconds` |
+| `UntraceUnavailableError`, `UntraceTimeoutError` | 503, network, timeout: retry with backoff |
+| `UntraceIntegrityError` | a sealed key, a key path, a signature, a folder public key or the ciphertext failed a local check |
+| `UntracePlannedError` | the operation is planned and not served yet |
+| `UntraceAbortError` | your `AbortSignal` fired |
 
 ### Timeouts, cancellation and retries
 
 ```ts
-const untrace = new UntraceClient({
-  timeoutMs: 30_000, // per request, default 30 s
-  maxRetries: 2,     // extra attempts on 503, 429 and network errors, default 2
-  retryBaseMs: 250,  // first backoff delay, doubled per attempt with jitter, capped at 10 s
-})
-
+const untrace = new UntraceClient({ timeoutMs: 30_000, maxRetries: 2, retryBaseMs: 250 })
 const ctl = new AbortController()
 await untrace.files.download(fileId, { signal: ctl.signal, timeoutMs: 60_000 })
 ```
 
-Only 503, 429 (honouring `Retry-After`) and network errors or timeouts are retried. Any other
-4xx or 5xx fails at once. A POST is not resent after a network error, since the server may have
-acted on it. An aborted call is never retried.
-
-Upload finalize is the one POST that is retried after a network error, safely: the SDK first asks
-Drive (`GET /api/v1/files/{id}`) whether that file was already committed. If it was, the upload
-succeeds; if it is still pending, finalize is re-sent for the **same** `fileId` (Drive only promotes a
-pending file once, so nothing is billed twice); if Drive cannot be reached, you get
-`UntraceFinalizeUnknownError` with the `fileId` instead of a retryable error, so you never create a
-second, double-billed copy by uploading again.
-
-Errors never contain your client secret, an access token or a signature: they are redacted from
-every message and error body. The SDK writes nothing to the console.
-
-Inputs are checked before any request: the client id (`utc_` + 22 base58 characters), the secret
-format, file ids (UUID), file names, `limit` and `cursor`. `members.add` takes a `utc_` id.
-`members.setRole` and `members.remove` take a `utc_` id or a base58 wallet, so asking to change
-the owner's wallet gets a clear `UntraceOwnerImmutableError`.
+Only 503, 429 (honouring `Retry-After`) and network errors or timeouts are retried. Other 4xx never
+are. A network failure on an upload is not retried, so a file is never stored twice.
 
 ## Security notes
 
-- Files are encrypted on your server; Drive only stores shards and sealed file keys.
-- **Known limitation (audit M5, planned for v1.1):** `members.add` seals the file key to the public key
-  Drive returns for the candidate `utc_` id. The SDK checks that the record is self-consistent (the
-  candidate's sign key signed its box key), but nothing yet proves the **owner** created that key, so a
-  compromised Drive could substitute a key it controls. The owner's sharing key, by contrast, is checked
-  against the owner's wallet signature. The fix needs Drive to have the owner's wallet sign each developer
-  key record; until then, only add members on a Drive you trust.
+- Keep `UNTRACE_CLIENT_SECRET` on the server. The client keeps it in a private field and never prints
+  it; error messages and bodies are redacted.
 
-## Advanced: self-hosted nodes
+## Contract and generated types
 
-> **Requires untrace-drive at [`b88bf15`](https://github.com/untracenetwork/untrace-drive/commit/b88bf15) or later
-> (Drive v1.0.0, sealed-stream format v2).** The SDK writes stream version `0x02` (per-chunk AAD). An older
-> Drive cannot open `0x02`, so every file uploaded through the SDK would be unreadable in the owner's
-> browser until Drive is upgraded. Check your Drive build before pointing the SDK at it.
-
-If you run your own Drive and storage nodes, follow the self-hosting guide:
-https://github.com/untracenetwork/untrace-cli/blob/main/docs/SELF-HOST.md
-
-Then:
-
-1. Install [untrace-cli](https://github.com/untracenetwork/untrace-cli) on your self-hosted backend or
-   datacenter server that runs the main validator node, and set up your nodes with it.
-2. Rebuild the SDK from source pointed at that setup:
+`contract/openapi.yaml` is a byte copy of untrace-drive `docs/api/openapi.yaml`, and
+`contract/SOURCE.json` records the commit it came from. `npm run gen:types` regenerates
+`packages/core/src/generated/`; `npm run check:types` (in CI) fails if they are stale. To update from a
+Drive checkout:
 
 ```bash
-git clone https://github.com/untracenetwork/untrace-sdk && cd untrace-sdk
-npm ci && npm run build
-mkdir -p ../tarballs && for p in core next node react vue; do npm pack -w packages/$p --pack-destination ../tarballs; done
-```
-
-Then, in your app, install the tarballs you need (core first; `next` and `node` depend on it):
-
-```bash
-npm i /path/to/tarballs/untrace-sdk-1.0.0.tgz /path/to/tarballs/untrace-next-1.0.0.tgz
-```
-
-The tarball names follow the package names, so they change if the npm scope is renamed (issue #4).
-
-```ts
-const untrace = new UntraceClient({
-  baseUrl: "https://drive.example.internal",
-  endpoints: { files: "/api/v1/files" },          // override any path that differs
-  nodeUrls: { 1: "https://node1.example.internal" }, // per node index, when not same-origin
-})
+node scripts/gen-types.mjs --from ../untrace-drive
 ```
 
 ## Development
 
 ```bash
-npm ci
+npm ci --no-audit --no-fund
+npm run check:types    # generated types match the contract
+npm run check:public   # no internals, no secrets, Apache-2.0 everywhere
 npm run build
-npm run typecheck
-npm test
-npm run pack:check   # after build: each tarball ships only dist, README and LICENSE
+npm run typecheck      # packages and examples
+npm test               # unit tests against a mock Drive (fetch is mocked)
+npm run pack:check     # tarballs ship dist, README, LICENSE only
+npm run test:live      # opt-in, against a real Drive
 ```
 
-`npm run test:live` runs an integration suite against a real Drive. It is skipped unless
-`UNTRACE_CLIENT_ID`, `UNTRACE_CLIENT_SECRET`, `UNTRACE_BASE_URL` and `UNTRACE_TEST_FILE_ID` are
-set. See [test-live/README.md](test-live/README.md). The **Live integration** workflow runs it
-on demand from repo secrets.
+`npm run test:live` is skipped unless `UNTRACE_CLIENT_ID`, `UNTRACE_CLIENT_SECRET` and
+`UNTRACE_BASE_URL` are set. The manual **Live integration** workflow runs it from repo secrets.
 
-`UNTRACE_LIVE_SMOKE=1 npm run test:live` also runs an unauthenticated, read-only smoke against
-production (or `UNTRACE_BASE_URL`): bogus client ids only, checks the documented 401/400 error
-bodies. It needs no secrets and creates nothing.
-
-Releases: see [docs/RELEASING.md](docs/RELEASING.md). Pushing a `v*` tag only verifies (build, tests,
-`npm publish --dry-run`) and never publishes. Publishing is the manual **Publish to npm** workflow: you
-type the version, and the job waits in the `npm-publish` environment until JC approves it. JC must
-create that environment (JC as required reviewer, `NPM_TOKEN` as an environment secret, not a repo
-secret) and protect `main` before the first release.
-
-API contract: untrace-drive `docs/api/developer-keys.md` (merged in PR #328, `c075a6e`). Where the server differs from
-the doc, the SDK follows the server: see [docs/contract-notes.md](docs/contract-notes.md).
+Releases: see [docs/RELEASING.md](docs/RELEASING.md). A `v*` tag only verifies; publishing is a manual
+workflow that waits for JC's approval.
 
 ## License
 
-MIT
+Apache-2.0. See [LICENSE](./LICENSE).

@@ -1,13 +1,14 @@
 /**
  * Release gating and package manifest rules. A v* tag push must never publish: only
  * publish.yml publishes, it is manual, needs a typed version, and its publish job runs in the
- * `npm-publish` environment. The published manifest depends on @untracenetwork/sdk ^1.0.0.
+ * `npm-publish` environment. The published manifest depends on @untracenetwork/sdk ^2.0.0.
  */
 import { readdirSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 import { describe, expect, it } from "vitest"
 
+import { TOOL_NAMES } from "../src/server"
 import { VERSION } from "../src/version"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
@@ -40,7 +41,7 @@ describe("package manifest", () => {
   })
 
   it("depends on the published SDK range, never a file: or git dependency", () => {
-    expect(pkg.dependencies["@untracenetwork/sdk"]).toBe("^1.0.0")
+    expect(pkg.dependencies["@untracenetwork/sdk"]).toBe("^2.0.0")
     for (const v of Object.values<string>(pkg.dependencies)) expect(v).not.toMatch(/^(file:|git|github:|https?:)/)
   })
 
@@ -110,13 +111,17 @@ describe("workflows", () => {
 })
 
 describe("docs copy rules", () => {
-  const docs = ["README.md", "llms.txt", "docs/DEVELOPMENT.md", "docs/RELEASING.md"]
-  it.each(docs)("%s has no em dashes, certifications, shard math or authorized devices", (f) => {
+  const docs = ["README.md", "llms.txt", "SKILL.md", "CHANGELOG.md", "docs/DEVELOPMENT.md", "docs/RELEASING.md"]
+  it.each(docs)("%s has no em dashes, certifications, storage internals or authorized devices", (f) => {
     const s = read(f)
     expect(s).not.toMatch(/\u2014/)
     expect(s).not.toMatch(/authori[sz]ed devices?/i)
     expect(s).not.toMatch(/\b(SOC ?2|ISO ?27001|HIPAA|certified)\b/i)
-    expect(s).not.toMatch(/per[- ]provider|\b\d+ shards? (per|on each) /i)
+    expect(s).not.toMatch(/per[- ]provider|\bsha[r]ds?\b|storage nodes?|\bnodes? (url|list|set)/i)
+  })
+
+  it("public copy says 6 regions, any 3 recover", () => {
+    for (const f of ["README.md", "llms.txt", "SKILL.md"]) expect(read(f)).toMatch(/6 regions/)
   })
 
   it("README and llms.txt link no private GitHub repos", () => {
@@ -125,11 +130,13 @@ describe("docs copy rules", () => {
 
   it("README documents every tool and the env vars", () => {
     const r = read("README.md")
-    for (const t of ["untrace_list_files", "untrace_get_file", "untrace_upload_file", "untrace_download_file", "untrace_rename_file", "untrace_delete_file", "untrace_list_members", "untrace_add_member", "untrace_set_member_role", "untrace_remove_member", "untrace_setup_guide"]) {
+    for (const t of TOOL_NAMES) {
       expect(r).toContain(t)
       expect(read("llms.txt")).toContain(t)
     }
-    for (const v of ["UNTRACE_CLIENT_ID", "UNTRACE_CLIENT_SECRET", "UNTRACE_BASE_URL", "UNTRACE_MCP_ROOT"]) expect(r).toContain(v)
+    for (const v of ["UNTRACE_CLIENT_ID", "UNTRACE_CLIENT_SECRET", "UNTRACE_BASE_URL", "UNTRACE_MCP_ROOT", "UNTRACE_MCP_PUBLIC_URL", "UNTRACE_MCP_OAUTH_CLIENT_SECRET"]) expect(r).toContain(v)
+    expect(r).toMatch(/Claude custom connector/i)
+    expect(r).toMatch(/ChatGPT/)
     expect(r).toContain("npx -y @untracenetwork/mcp")
     expect(r).toContain("https://untrace.network/llms.txt")
   })

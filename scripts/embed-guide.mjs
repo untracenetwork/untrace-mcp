@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Embed the Drive SDK README (guide/sdk-readme.md, copied from @untracenetwork/sdk 1.0.0) into
-// src/generated/guide.ts as named sections, so untrace_setup_guide works offline and matches
-// the SDK version this server depends on. Runs before build, typecheck and test.
+// Embed the Drive SDK guide (guide/sdk-readme.md: the untrace-sdk 2.0.0 README without its
+// "How ... works" internals notes, with the secret shown as a placeholder) into
+// src/generated/guide.ts as named sections, so untrace_setup_guide works offline.
+// Runs before build, typecheck and test.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
@@ -22,16 +23,16 @@ for (const line of md.split("\n")) {
 }
 sections[current] = buf.join("\n").trim()
 
-// Only the sections an app developer needs. Development, release and self-hosting notes are left out.
+// Only the sections an app developer needs. Development, release and contract notes are left out.
 const pick = {
   intro: "intro",
   createKey: "1. Create a key in Drive",
-  next: "2. Next.js quick start",
-  node: "3. Node.js",
+  core: "2. Core client",
+  next: "3. Next.js",
   browser: "4. React and Vue",
   scopes: "Scopes and roles",
-  metering: "Metering",
   errors: "Errors",
+  security: "Security notes",
 }
 const out = {}
 for (const [key, heading] of Object.entries(pick)) {

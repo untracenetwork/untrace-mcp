@@ -1,7 +1,7 @@
 name: Publish to npm
 # The ONLY workflow that publishes. Manual only:
-#   1. Run it from the release tag (Actions -> Publish to npm -> "Use workflow from: v1.0.0").
-#   2. Type the version in `confirm` (for example 1.0.0). It must equal the tag and package.json.
+#   1. Run it from the release tag (Actions -> Publish to npm -> "Use workflow from: v2.0.0").
+#   2. Type the version in `confirm` (for example 2.0.0). It must equal the tag and package.json.
 #   3. The `publish` job waits in the `npm-publish` environment until JC approves it.
 # NPM_TOKEN is an ENVIRONMENT secret of `npm-publish`, never a repo secret. See docs/RELEASING.md.
 # @untracenetwork/sdk must already be on npm: this workflow never uses the CI-only vendored SDK.
@@ -47,7 +47,7 @@ jobs:
           CONFIRM: ${{ inputs.confirm }}
         run: node scripts/check-version.mjs "$CONFIRM"
       - name: "@untracenetwork/sdk is published (required dependency)"
-        run: npm view "@untracenetwork/sdk@1.0.0" version
+        run: npm view "@untracenetwork/sdk@2.0.0" version
       - run: npm install --no-audit --no-fund --no-package-lock
       - run: npm run build
       - run: npm run typecheck

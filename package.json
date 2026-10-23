@@ -1,8 +1,8 @@
 {
   "name": "@untracenetwork/mcp",
-  "version": "1.0.0",
-  "description": "MCP server for Untrace Drive: let an AI agent list, read, upload and share files a developer key is a member of.",
-  "license": "MIT",
+  "version": "2.0.0",
+  "description": "MCP server for Untrace Drive: let an AI agent list, upload, download and share end-to-end encrypted files, over stdio or Streamable HTTP with OAuth (Claude custom connector, ChatGPT app).",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "untrace-mcp": "dist/cli.js"
@@ -32,18 +32,21 @@
     "pretest": "npm run guide",
     "test": "vitest run",
     "pack:check": "node scripts/check-pack.mjs",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "check:public": "node scripts/check-public.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
-    "@untracenetwork/sdk": "^1.0.0",
+    "@untracenetwork/sdk": "^2.0.0",
+    "express": "^5.2.1",
     "zod": "^4.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsup": "^8.5.0",
     "typescript": "~5.9.3",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "@types/express": "^5.0.0"
   },
   "engines": {
     "node": ">=20"
@@ -60,5 +63,9 @@
     "model-context-protocol",
     "encrypted-storage",
     "ai-agents"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/untracenetwork/untrace-mcp.git"
+  }
 }
