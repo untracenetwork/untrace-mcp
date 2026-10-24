@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Secrets v0: `untrace_secret_set`, `untrace_secret_get`, `untrace_secret_list`,
+  `untrace_secret_share`, `untrace_secret_unshare`. A secret is a small encrypted file in a reserved
+  `.untrace/secrets/<name>` folder of the owner's Drive, made and opened by the SDK like any file,
+  with per-secret key entries. Set never returns the value, list returns names only, and a value
+  this server has seen is redacted from every other result, error and log line.
+
 ## 2.0.0 (unreleased)
 
 Built on `@untracenetwork/sdk` ^2.0.0 (Drive API v1: OAuth client credentials, files encrypted on

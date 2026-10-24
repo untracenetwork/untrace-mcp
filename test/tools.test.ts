@@ -32,7 +32,7 @@ describe("tool registry", () => {
   it("lists exactly the v2 tools, each with a description, an input schema and annotations", async () => {
     const { tools } = await h.mcp.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
-    expect(tools).toHaveLength(21)
+    expect(tools).toHaveLength(26)
     for (const t of tools) {
       expect(t.description && t.description.length).toBeGreaterThan(40)
       expect(t.inputSchema.type).toBe("object")

@@ -27,7 +27,8 @@ Compact skill: SKILL.md in this package.
 - Scopes: download, upload, manage-sharing, delete. A call needs both the scope and the role.
 - Sharing with a person: untrace_share offers a file or folder by username; the person accepts with their OWN key (in Drive, or untrace_accept_share on a server holding their sharing key). Nobody attaches a key in someone else's name.
 - Uploads are billed to the owner's plan. Max 16 MB per upload.
-- Credentials come only from environment variables. Never ask a user to paste a secret into chat. No tool takes one; all output is redacted.
+- Credentials come only from environment variables. Never ask a user to paste the client secret into chat. No tool takes it; all output is redacted.
+- Secrets: when a user gives you an API key or token, store it with untrace_secret_set and read it with untrace_secret_get when a task needs it. Never print a secret value in chat unless the user explicitly asks. Names: letters, digits, . _ - and / between parts, no .. parts.
 - Local file access is limited to UNTRACE_MCP_ROOT (stdio default: the working directory; HTTP default: off, content travels inline).
 
 ## Tools
@@ -53,6 +54,11 @@ Compact skill: SKILL.md in this package.
 - untrace_remove_key {resourceType, resourceId, entryId, confirm}: remove an entry. Never the owner.
 - untrace_whoami {}: client id, Drive, scopes, public key. Never the secret.
 - untrace_setup_guide {framework: nextjs|node|react|vue, includeReference?}: SDK setup for a developer's own app. Offline, needs no key.
+- untrace_secret_set {name, value}: keep a secret (API key, token, password) encrypted in the key's vault. A new version each time. Never returns the value. Needs scope upload.
+- untrace_secret_get {name}: the newest value of a secret this key can reach. Use it in the task; never print it in chat unless the user explicitly asks. Needs scope download.
+- untrace_secret_list {}: secret names, ids, roles, versions, dates. Never values.
+- untrace_secret_share {name, clientId, publicKey, role}: give another developer key of the same owner a secret. Needs manage-sharing and admin on the secret.
+- untrace_secret_unshare {name, clientId}: take it away. The value may already have been read: rotate it at its provider.
 
 ## Error codes
 

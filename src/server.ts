@@ -40,7 +40,8 @@ import { z } from "zod"
 import { ToolRefusal, toolError } from "./errors"
 import { FRAMEWORKS, setupGuide } from "./guide"
 import { isSymlink, resolveInsideRoot, resolveRoot } from "./paths"
-import { configuredSecrets, redact } from "./redact"
+import { configuredSecrets, redact, redactExcept, rememberSecretValue } from "./redact"
+import { MAX_SECRET_BYTES, Vault, validateSecretName } from "./secrets"
 import { VERSION } from "./version"
 
 /** Drive accepts at most 16 MiB of ciphertext per upload in API v1; leave room for the framing. */
@@ -125,6 +126,11 @@ export const TOOL_NAMES = [
   "untrace_remove_key",
   "untrace_whoami",
   "untrace_setup_guide",
+  "untrace_secret_set",
+  "untrace_secret_get",
+  "untrace_secret_list",
+  "untrace_secret_share",
+  "untrace_secret_unshare",
 ] as const
 
 const uuid = z.string().uuid()
@@ -205,6 +211,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         "Sharing with a person: untrace_share offers a file or folder to their Untrace username; they accept by attaching their OWN key. Nobody can attach a key in someone else's name. The owner can never be removed or demoted.",
         "Credentials are set in this server's environment. Never ask the user for the client secret in chat. Deleting a file, trashing a folder or removing a key needs confirm: true after the user agrees.",
         "Developers adding Untrace to their own app: call untrace_setup_guide once the stack is known.",
+        "Secrets (API keys, tokens, passwords): when the user gives you one, store it with untrace_secret_set instead of keeping it in the chat, and read it back with untrace_secret_get only when a task needs it. Never print a secret value in the chat unless the user explicitly asks to see it.",
       ].join(" "),
     }
   )
@@ -634,6 +641,102 @@ server.registerTool(
     },
     async ({ framework, includeReference }: { framework: (typeof FRAMEWORKS)[number]; includeReference?: boolean }) => ({
       content: [{ type: "text" as const, text: setupGuide(framework, includeReference ?? true) }],
+    })
+  )
+
+  const secretNameSchema = z
+    .string()
+    .min(1)
+    .max(128)
+    .describe("The secret name, for example openai or stripe/live_key: letters, digits, . _ - and / between parts, at most 128 characters. Case sensitive.")
+  const NEVER_PRINT = "Never print a secret value in the chat unless the user explicitly asks to see it."
+  const vault = () => new Vault(getClient())
+
+  server.registerTool(
+    "untrace_secret_set",
+    {
+      title: "Store a secret value",
+      description: `Store a secret value (an API key, token or password) in Untrace under a name, so it never has to be pasted into a chat again. The value is encrypted on the machine running this server, like any file, into this key's vault. Setting a name again stores a new version; the old one is kept. The answer never contains the value: only the name, id and version. Needs the upload scope. ${NEVER_PRINT}`,
+      inputSchema: {
+        name: secretNameSchema,
+        value: z.string().min(1).max(MAX_SECRET_BYTES).describe("The value to keep. It is never sent back by this tool."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    run(async ({ name, value }: { name: string; value: string }) => {
+      rememberSecretValue(value)
+      validateSecretName(name)
+      if (new TextEncoder().encode(value).length > MAX_SECRET_BYTES) throw new ToolRefusal(`Refused: a secret value is at most ${MAX_SECRET_BYTES} bytes.`)
+      const r = await vault().set(name, value)
+      return { ...r, stored: true }
+    })
+  )
+
+  server.registerTool(
+    "untrace_secret_get",
+    {
+      title: "Read a secret value",
+      description: `Read the newest version of a secret this key can reach (its own, or one another key of the same owner shared with it). Returns the value so you can use it in a task, for example in an API call or a config file. ${NEVER_PRINT} Do not repeat it in your reply, and do not write it to a file the user did not ask for. Needs the download scope.`,
+      inputSchema: { name: secretNameSchema },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    run(async ({ name }: { name: string }) => {
+      validateSecretName(name)
+      const r = await vault().get(name)
+      const text = redactExcept({ name: r.name, id: r.id, version: r.version, createdAt: r.createdAt, value: r.value }, "value", configuredSecrets())
+      return { content: [{ type: "text" as const, text }] }
+    })
+  )
+
+  server.registerTool(
+    "untrace_secret_list",
+    {
+      title: "List secrets",
+      description:
+        "List the secrets this key can reach, by name: its own and those shared with it, with id, this key's role, newest version and when it was last set. Never returns a value: read one with untrace_secret_get when a task needs it.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    run(async () => ({ secrets: await vault().list() }))
+  )
+
+  server.registerTool(
+    "untrace_secret_share",
+    {
+      title: "Share a secret with another agent key",
+      description:
+        "Give another developer key of the SAME owner access to a secret, with a role: viewer can read it, editor can also set new versions, admin can also share it on. The secret key is opened on this machine and sealed to that key's public key, so Untrace never sees it. Later versions reach it without sharing again. To find the other key's publicKey, run untrace_whoami on the server that runs as it. Needs the manage-sharing scope and role admin on the secret. To give a person access, use Untrace Drive.",
+      inputSchema: {
+        name: secretNameSchema,
+        clientId: z.string().regex(CLIENT_ID_RE, "clientId is utc_ followed by 22 characters").describe("The other developer key's client id (utc_...)."),
+        publicKey: publicKeySchema,
+        role: roleSchema,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    run(async ({ name, clientId, publicKey, role }: { name: string; clientId: string; publicKey: string; role: GrantRole }) => {
+      validateSecretName(name)
+      if (clientId === getClient().clientId) throw new ToolRefusal("Refused: this key already holds the secret. Give the client id of another key.")
+      const r = await vault().share(name, clientId, publicKey, role)
+      return { name: r.name, id: r.id, entry: clean(r.entry) }
+    })
+  )
+
+  server.registerTool(
+    "untrace_secret_unshare",
+    {
+      title: "Stop sharing a secret with a key",
+      description:
+        "Remove another developer key's access to a secret, so it can no longer read new or old versions from Untrace. It cannot un-read a value it already read: rotate the secret at its provider and set the new value with untrace_secret_set. Needs the manage-sharing scope and role admin on the secret.",
+      inputSchema: {
+        name: secretNameSchema,
+        clientId: z.string().regex(CLIENT_ID_RE, "clientId is utc_ followed by 22 characters").describe("The client id (utc_...) to remove."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    run(async ({ name, clientId }: { name: string; clientId: string }) => {
+      validateSecretName(name)
+      return vault().unshare(name, clientId)
     })
   )
 

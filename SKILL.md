@@ -46,6 +46,7 @@ Useful examples:
 - "List my Untrace folders, then download the latest NDA to ./safe/nda.pdf."
 - "Upload ./passport.pdf into my Identity folder and give me the new file id."
 - "Share the Contracts folder with username alice-legal as viewer."
+- "Keep my OpenAI key in Untrace as openai, then share it with my build agent."
 - "Guide me through adding Untrace to my Next.js app without exposing the client secret."
 
 Rules:
@@ -54,6 +55,7 @@ Rules:
 - A `folder_access_required` means the key was not added to that folder. Pick another folder, create one, or ask an admin to add the key.
 - Deleting a file, trashing a folder or removing a key needs `confirm: true`. Ask the user first.
 - Sharing with a person is an offer: they accept with their own key.
+- When the user gives you an API key or token, keep it with `untrace_secret_set` and read it with `untrace_secret_get` only when a task needs it. Never print a secret value in chat unless the user explicitly asks. `untrace_secret_share` gives it to another key of the same owner.
 
 ## Keep context small
 

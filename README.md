@@ -257,9 +257,50 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8787/mcp wit
 | `untrace_remove_key` | Remove an entry. Requires `confirm: true`. Never the owner | scope `manage-sharing`, admin |
 | `untrace_whoami` | This key's client id, Drive, scopes and public key. Never the secret | nothing |
 | `untrace_setup_guide` | Step-by-step instructions, with code, for adding the Drive SDK to a Next.js, Node.js, React or Vue app. Works offline, no key needed | nothing |
+| `untrace_secret_set` | Keep a secret (an API key, token or password) under a `name`. Encrypted on this machine. Setting it again adds a new version. Never sends the value back | scope `upload` |
+| `untrace_secret_get` | Read the newest value of a secret this key can reach | scope `download` |
+| `untrace_secret_list` | The secrets this key can reach, by name, with version and date. Never the values | any role |
+| `untrace_secret_share` | Give another developer key of the same owner a secret, as `viewer`, `editor` or `admin` | scope `manage-sharing`, admin on the secret |
+| `untrace_secret_unshare` | Take a secret away from a key | scope `manage-sharing`, admin on the secret |
 
 Local paths are relative to `UNTRACE_MCP_ROOT`. Paths that leave it (`..`, absolute paths
 elsewhere, symlinks that point outside) are refused, and downloads never write through a symlink.
+
+### Secrets
+
+Stop pasting API keys into chats. Tell Untrace to keep them, and share them with your agents.
+
+When you give your agent a key, it stores it in Untrace with `untrace_secret_set` and uses it later
+with `untrace_secret_get`, so the key does not have to sit in a chat, a prompt or a `.env` file you
+pass around. A secret is encrypted on the machine that runs this server, exactly like a file, and
+we cannot read it.
+
+Try it:
+
+- "Keep my OpenAI key in Untrace as `openai`: sk-..."
+- "What secrets do you have?"
+- "Use the `stripe/test_key` secret to create a test customer."
+- "Share the `openai` secret with my build agent, utc_..., as viewer."
+- "Stop sharing `openai` with utc_..."
+
+How it works:
+
+- **Names.** Letters, digits, `.`, `_` and `-`, with `/` between parts (for example
+  `stripe/live_key`). At most 128 characters. Names are case sensitive.
+- **Versions.** Setting a name again stores a new version and keeps the old one. Reading returns the
+  newest.
+- **Where they live.** Secrets are kept in a reserved `.untrace` folder of your Drive, one folder per
+  secret. Your own account can always open them.
+- **Sharing.** `untrace_secret_share` gives another developer key of your account a secret. Pass that
+  key's client id and public key (run `untrace_whoami` on the server that uses it). New versions
+  reach it without sharing again. To give a secret to a person, use Untrace Drive.
+- **Taking it back.** `untrace_secret_unshare` stops a key from reading the secret from Untrace. It
+  cannot make the key forget a value it already read, so also rotate the key at its provider and
+  store the new value. Revoking the developer key in Drive takes away everything it held at once.
+- **Quiet by default.** `untrace_secret_set` never sends the value back, and `untrace_secret_list`
+  shows names only. Once this server has seen a value, it is replaced with `[redacted]` in every
+  other answer, error and log line. The agent is told never to show a value in the chat unless you
+  ask to see it.
 
 ### Errors
 
