@@ -8,6 +8,7 @@ developer key can reach, and helps the agent add the Untrace Drive SDK to a deve
 - Transports: stdio (local clients) and Streamable HTTP with OAuth (Claude custom connector, ChatGPT app)
 - Docs: https://untrace.network/docs/mcp
 - For agents: https://untrace.network/llms.txt (and [llms.txt](llms.txt) and [SKILL.md](SKILL.md) in this package)
+- Full Untrace apps (web, desktop, mobile): https://drive.untrace.network. They are closed source; this server is an open client of the hosted API.
 
 ## Route the user first
 
