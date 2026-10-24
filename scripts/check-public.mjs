@@ -7,8 +7,9 @@
 // stricter than the SDK's gate, this fails (exit 1) when a tracked file:
 //   1. names core internals (split, redundancy coding, secret sharing, field math, storage topology,
 //      core key-derivation labels);
-//   2. calls any crypto primitive. Hashing and randomness for OAuth (createHash, randomBytes,
-//      timingSafeEqual) are allowed in src/http.ts and src/cli.ts only;
+//   2. calls any crypto primitive (except src/agent/keys.ts, the agent key, see CRYPTO_ALLOWED).
+//      Hashing and randomness (createHash, randomBytes, timingSafeEqual) are allowed in
+//      src/http.ts, src/cli.ts and src/agent/keys.ts only;
 //   3. holds a secret or the literal client secret prefix, a private host, or native code;
 //   4. lacks the Apache-2.0 LICENSE, or package.json says another licence.
 // Patterns are assembled from pieces so this file does not trip the stock leak gate itself.
@@ -21,7 +22,11 @@ const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclud
   .filter((f) => existsSync(f))
 
 const TEXT = /\.(m?[jt]sx?|c?js|json|ya?ml|md|txt|html|sh)$/
-const HASH_ALLOWED = new Set(["src/http.ts", "src/cli.ts", "ci/use-vendored-sdk.mjs", "scripts/check-public.mjs"])
+const HASH_ALLOWED = new Set(["src/http.ts", "src/cli.ts", "src/agent/keys.ts", "ci/use-vendored-sdk.mjs", "scripts/check-public.mjs"])
+// The one exception to "no cryptography here": `agent init` creates a developer key on the agent's
+// own machine and signs its pairing code. The SDK exports the box key and the OAuth value but
+// not the Ed25519 sign key, so that half is derived in this file only (see docs/AGENT-PAIRING.md).
+const CRYPTO_ALLOWED = new Set(["src/agent/keys.ts"])
 
 const j = (...parts) => parts.join("")
 const re = (src, flags = "") => new RegExp(src, flags)
@@ -65,7 +70,7 @@ for (const f of files) {
     if (m) hit(f, `core internals name "${m[0]}"`)
   }
   const cm = text.match(CRYPTO_CALL)
-  if (cm) hit(f, `crypto primitive (${cm[0]}): the MCP server leaves all cryptography to the SDK`)
+  if (cm && !CRYPTO_ALLOWED.has(f)) hit(f, `crypto primitive (${cm[0]}): the MCP server leaves all cryptography to the SDK`)
   if (!isTest && !HASH_ALLOWED.has(f) && HASHING.test(text)) hit(f, `hashing or randomness outside src/http.ts and src/cli.ts (${text.match(HASHING)[0]})`)
 }
 

@@ -70,6 +70,20 @@ sees them.
    `untrace_whoami` shows the key's client id and public key, which an admin can also pass to
    `untrace_attach_key`.
 
+### Or: generate the key on the agent's machine
+
+So the secret never leaves the machine the agent runs on:
+
+```bash
+npx -y @untracenetwork/mcp agent init --label "Release agent" --scopes download,upload
+```
+
+It stores the key in the OS keychain (or a 0600 file) and prints a pairing code and a
+fingerprint. In Drive open **Settings > Developer keys > Pair an agent**, paste the code, check the
+fingerprint and approve. `untrace-mcp agent status` shows whether Drive has approved it. With
+`UNTRACE_CLIENT_ID` and `UNTRACE_CLIENT_SECRET` unset, `untrace-mcp` then uses this key. Details:
+`docs/AGENT-PAIRING.md` in the package repository.
+
 ## 2. Environment variables
 
 | Variable | Mode | Meaning |

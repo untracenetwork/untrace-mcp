@@ -24,6 +24,9 @@ automatically before build, typecheck and test. `src/generated/` is not committe
   server for one confidential client (authorization code + PKCE, refresh rotation, revocation).
 - `src/errors.ts`: SDK error to MCP tool error mapping (actionable messages).
 - `src/paths.ts`: the `UNTRACE_MCP_ROOT` sandbox (traversal and symlink checks).
+- `src/agent/`: `untrace-mcp agent init|code|status` (docs/AGENT-PAIRING.md). `keys.ts` is the
+  only file allowed a crypto primitive: it derives the agent key's Ed25519 sign key, which the SDK
+  does not export, to sign the pairing code. `store.ts` is the keychain / 0600 file store.
 - `src/redact.ts`: secret redaction applied to every result, error and log line.
 - `src/guide.ts`, `guide/sdk-readme.md`: `untrace_setup_guide`. `guide/sdk-readme.md` is the
   untrace-sdk README without its "How ... works" internals notes and with the secret shown as a
@@ -42,7 +45,7 @@ the SDK is published.
 
 ## Rules
 
-- The MCP server does no cryptography. The SDK encrypts, seals and opens keys; this repo only
+- The MCP server does no cryptography (one exception: `src/agent/keys.ts`, above). The SDK encrypts, seals and opens keys; this repo only
   calls the SDK's typed APIs (files, folders, keys, shares) and zeroes the one key it holds (the
   optional sharing secret) after use. `scripts/check-public.mjs` enforces it.
 - Never accept a secret as a tool argument, never log or return one.

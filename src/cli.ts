@@ -5,6 +5,7 @@
  *   npx -y @untracenetwork/mcp                       stdio (Claude Desktop, Claude Code, Cursor, ...)
  *   npx -y @untracenetwork/mcp http                  Streamable HTTP + OAuth (Claude connector, ChatGPT app)
  *   npx -y @untracenetwork/mcp new-connector-secret  print a fresh UNTRACE_MCP_OAUTH_CLIENT_SECRET
+ *   npx -y @untracenetwork/mcp agent init            create this agent's key HERE and print a pairing code
  *
  * stdio: stdout carries the MCP protocol only; diagnostics go to stderr and never include a secret.
  */
@@ -12,6 +13,8 @@ import { randomBytes } from "node:crypto"
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
+import { AgentStore } from "./agent/store"
+import { loadAgentCredentials, runAgent } from "./agent/command"
 import { createHttpApp, listen, MCP_PATH } from "./http"
 import { configuredSecrets, redact } from "./redact"
 import { createServer } from "./server"
@@ -28,11 +31,13 @@ const HELP = [
   "  untrace-mcp                        serve over stdio (default)",
   "  untrace-mcp http                   serve Streamable HTTP with OAuth at <public url>/mcp",
   "  untrace-mcp new-connector-secret   print a new random UNTRACE_MCP_OAUTH_CLIENT_SECRET",
+  "  untrace-mcp agent init|code|status  create a key on THIS machine and pair it (agent --help)",
   "  untrace-mcp --version | --help",
   "",
   "Environment (all modes):",
   "  UNTRACE_CLIENT_ID      developer key client id (utc_...)",
   "  UNTRACE_CLIENT_SECRET  developer key secret (never pass it as an argument)",
+  "                         (both unset: the key from `untrace-mcp agent init` is used)",
   "  UNTRACE_BASE_URL       optional, default https://drive.untrace.network",
   "  UNTRACE_MCP_ROOT       folder path uploads read from and downloads write to",
   "                         (stdio default: the working directory; http default: paths off)",
@@ -49,6 +54,8 @@ const HELP = [
 ].join("\n")
 
 async function stdio(): Promise<void> {
+  const agent = await loadAgentCredentials()
+  if (agent) log(`untrace-mcp: using the agent key ${agent} from this machine`)
   if (!process.env.UNTRACE_CLIENT_ID || !process.env.UNTRACE_CLIENT_SECRET) {
     log("untrace-mcp: UNTRACE_CLIENT_ID / UNTRACE_CLIENT_SECRET are not set. File tools will answer with setup help; untrace_setup_guide works.")
   }
@@ -59,6 +66,8 @@ async function stdio(): Promise<void> {
 
 async function http(): Promise<void> {
   const env = process.env
+  const agent = await loadAgentCredentials(env)
+  if (agent) log(`untrace-mcp: using the agent key ${agent} from this machine`)
   const missing = ["UNTRACE_CLIENT_ID", "UNTRACE_CLIENT_SECRET", "UNTRACE_MCP_PUBLIC_URL", "UNTRACE_MCP_OAUTH_CLIENT_SECRET"].filter((k) => !env[k])
   if (missing.length) throw new Error(`missing environment: ${missing.join(", ")}. See untrace-mcp --help.`)
   const host = env.HOST || "127.0.0.1"
@@ -91,6 +100,16 @@ async function main(): Promise<void> {
     return
   }
   if (arg === "http") return http()
+  if (arg === "agent") {
+    const code = await runAgent(process.argv.slice(3), {
+      out: (l) => process.stdout.write(`${l}\n`),
+      err: (l) => log(l),
+      now: () => Date.now(),
+      store: new AgentStore(),
+    })
+    if (code !== 0) process.exitCode = code
+    return
+  }
   if (arg === undefined || arg === "stdio") return stdio()
   throw new Error(`unknown command ${arg}. See untrace-mcp --help.`)
 }
