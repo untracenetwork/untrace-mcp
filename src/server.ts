@@ -651,23 +651,31 @@ server.registerTool(
     .describe("The secret name, for example openai or stripe/live_key: letters, digits, . _ - and / between parts, at most 128 characters. Case sensitive.")
   const NEVER_PRINT = "Never print a secret value in the chat unless the user explicitly asks to see it."
   const vault = () => new Vault(getClient())
+  const sharedFlag = z
+    .boolean()
+    .optional()
+    .describe("Use a secret another key of the same owner shared with this key, instead of this key's own vault. Default false: own vault only.")
+  const sharedId = uuid.optional().describe("The shared secret's id, from untrace_secret_list with includeShared: true. Implies shared: true.")
+  type Target = { shared?: boolean; id?: string }
 
   server.registerTool(
     "untrace_secret_set",
     {
       title: "Store a secret value",
-      description: `Store a secret value (an API key, token or password) in Untrace under a name, so it never has to be pasted into a chat again. The value is encrypted on the machine running this server, like any file, into this key's vault. Setting a name again stores a new version; the old one is kept. The answer never contains the value: only the name, id and version. Needs the upload scope. ${NEVER_PRINT}`,
+      description: `Store a secret value (an API key, token or password) in Untrace under a name, so it never has to be pasted into a chat again. The value is encrypted on the machine running this server, like any file, into this key's vault. Setting a name again stores a new version; the old one is kept. It writes only into this key's own vault, even if a shared secret has the same name. To set a new version of a secret shared with this key, pass shared: true (or its id): Untrace accepts that only when the secret belongs to this key's own owner and this key is editor or admin. The answer never contains the value: only the name, id and version. Needs the upload scope. ${NEVER_PRINT}`,
       inputSchema: {
         name: secretNameSchema,
         value: z.string().min(1).max(MAX_SECRET_BYTES).describe("The value to keep. It is never sent back by this tool."),
+        shared: sharedFlag,
+        id: sharedId,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    run(async ({ name, value }: { name: string; value: string }) => {
+    run(async ({ name, value, shared, id }: { name: string; value: string } & Target) => {
       rememberSecretValue(value)
       validateSecretName(name)
       if (new TextEncoder().encode(value).length > MAX_SECRET_BYTES) throw new ToolRefusal(`Refused: a secret value is at most ${MAX_SECRET_BYTES} bytes.`)
-      const r = await vault().set(name, value)
+      const r = await vault().set(name, value, { shared, id })
       return { ...r, stored: true }
     })
   )
@@ -676,14 +684,14 @@ server.registerTool(
     "untrace_secret_get",
     {
       title: "Read a secret value",
-      description: `Read the newest version of a secret this key can reach (its own, or one another key of the same owner shared with it). Returns the value so you can use it in a task, for example in an API call or a config file. ${NEVER_PRINT} Do not repeat it in your reply, and do not write it to a file the user did not ask for. Needs the download scope.`,
-      inputSchema: { name: secretNameSchema },
+      description: `Read the newest version of a secret in this key's own vault. For a secret another key shared with this key, pass shared: true (or its id); the answer then says shared: true. Returns the value so you can use it in a task, for example in an API call or a config file. ${NEVER_PRINT} Do not repeat it in your reply, and do not write it to a file the user did not ask for. Needs the download scope.`,
+      inputSchema: { name: secretNameSchema, shared: sharedFlag, id: sharedId },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    run(async ({ name }: { name: string }) => {
+    run(async ({ name, shared, id }: { name: string } & Target) => {
       validateSecretName(name)
-      const r = await vault().get(name)
-      const text = redactExcept({ name: r.name, id: r.id, version: r.version, createdAt: r.createdAt, value: r.value }, "value", configuredSecrets())
+      const r = await vault().get(name, { shared, id })
+      const text = redactExcept({ name: r.name, id: r.id, version: r.version, createdAt: r.createdAt, shared: r.shared, value: r.value }, "value", configuredSecrets())
       return { content: [{ type: "text" as const, text }] }
     })
   )
@@ -693,11 +701,13 @@ server.registerTool(
     {
       title: "List secrets",
       description:
-        "List the secrets this key can reach, by name: its own and those shared with it, with id, this key's role, newest version and when it was last set. Never returns a value: read one with untrace_secret_get when a task needs it.",
-      inputSchema: {},
+        "List the secrets in this key's own vault, by name, with id, this key's role, newest version and when it was last set. With includeShared: true, also the secrets shared with this key, marked shared: true. Never returns a value: read one with untrace_secret_get when a task needs it.",
+      inputSchema: {
+        includeShared: z.boolean().optional().describe("Also list secrets shared with this key, marked shared: true. Default false."),
+      },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    run(async () => ({ secrets: await vault().list() }))
+    run(async ({ includeShared }: { includeShared?: boolean }) => ({ secrets: await vault().list({ includeShared }) }))
   )
 
   server.registerTool(
@@ -705,19 +715,21 @@ server.registerTool(
     {
       title: "Share a secret with another agent key",
       description:
-        "Give another developer key of the SAME owner access to a secret, with a role: viewer can read it, editor can also set new versions, admin can also share it on. The secret key is opened on this machine and sealed to that key's public key, so Untrace never sees it. Later versions reach it without sharing again. To find the other key's publicKey, run untrace_whoami on the server that runs as it. Needs the manage-sharing scope and role admin on the secret. To give a person access, use Untrace Drive.",
+        "Give another developer key of the SAME owner access to a secret, with a role: viewer can read it, editor can also set new versions, admin can also share it on. Untrace enforces the same owner: it attaches only keys of this key's own owner and refuses any other. The secret key is opened on this machine and sealed to that key's public key, so Untrace never sees it. Later versions reach it without sharing again. To find the other key's publicKey, run untrace_whoami on the server that runs as it. Needs the manage-sharing scope and role admin on the secret. To give a person access, use Untrace Drive.",
       inputSchema: {
         name: secretNameSchema,
         clientId: z.string().regex(CLIENT_ID_RE, "clientId is utc_ followed by 22 characters").describe("The other developer key's client id (utc_...)."),
         publicKey: publicKeySchema,
         role: roleSchema,
+        shared: sharedFlag,
+        id: sharedId,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    run(async ({ name, clientId, publicKey, role }: { name: string; clientId: string; publicKey: string; role: GrantRole }) => {
+    run(async ({ name, clientId, publicKey, role, shared, id }: { name: string; clientId: string; publicKey: string; role: GrantRole } & Target) => {
       validateSecretName(name)
       if (clientId === getClient().clientId) throw new ToolRefusal("Refused: this key already holds the secret. Give the client id of another key.")
-      const r = await vault().share(name, clientId, publicKey, role)
+      const r = await vault().share(name, clientId, publicKey, role, { shared, id })
       return { name: r.name, id: r.id, entry: clean(r.entry) }
     })
   )
@@ -727,16 +739,20 @@ server.registerTool(
     {
       title: "Stop sharing a secret with a key",
       description:
-        "Remove another developer key's access to a secret, so it can no longer read new or old versions from Untrace. It cannot un-read a value it already read: rotate the secret at its provider and set the new value with untrace_secret_set. Needs the manage-sharing scope and role admin on the secret.",
+        "Remove another developer key's access to a secret, so it can no longer read new or old versions from Untrace. It cannot un-read a value it already read: rotate the secret at its provider and set the new value with untrace_secret_set. Pass confirm: true only after the user has agreed. Needs the manage-sharing scope and role admin on the secret.",
       inputSchema: {
         name: secretNameSchema,
         clientId: z.string().regex(CLIENT_ID_RE, "clientId is utc_ followed by 22 characters").describe("The client id (utc_...) to remove."),
+        shared: sharedFlag,
+        id: sharedId,
+        confirm: z.boolean().describe("Must be true. Set it only after the user has confirmed."),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
-    run(async ({ name, clientId }: { name: string; clientId: string }) => {
+    run(async ({ name, clientId, shared, id, confirm }: { name: string; clientId: string; confirm: boolean } & Target) => {
+      if (confirm !== true) throw new ToolRefusal("Refused: unsharing a secret cuts that key's access. Ask the user, then call again with confirm: true.")
       validateSecretName(name)
-      return vault().unshare(name, clientId)
+      return vault().unshare(name, clientId, { shared, id })
     })
   )
 

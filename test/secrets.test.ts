@@ -12,7 +12,7 @@ import { configuredSecrets, forgetSecretValues, redact, redactExcept, rememberSe
 import { SECRET_MIME, validateSecretName } from "../src/secrets"
 import type { UntraceLike } from "../src/server"
 import { harness } from "./helpers"
-import { BASE, CLIENT_ID, OTHER_CLIENT, SECRET, createMockDrive, type MockDrive } from "./mock-drive"
+import { BASE, CLIENT_ID, FOREIGN_CLIENT, OTHER_CLIENT, SECRET, createMockDrive, type MockDrive } from "./mock-drive"
 
 const ALL = ["download", "upload", "delete", "manage-sharing"]
 const VALUE = "fake-api-key-for-tests-0123456789abcdef"
@@ -143,10 +143,15 @@ describe("untrace_secret_get", () => {
     f.entries[0]!.role = "admin"
     await writer.files.upload({ folderId: f.folderId, data: new TextEncoder().encode(VALUE), name: "v1", mime: SECRET_MIME })
     f.entries[0]!.role = "viewer"
-    const r = await h.call("untrace_secret_get", { name: "github/token" })
+    // Not without asking: the own vault has no github/token.
+    expect((await h.call("untrace_secret_get", { name: "github/token" })).text).toMatch(/^refused: .*no secret named github\/token in this key's vault/)
+    expect((await h.call("untrace_secret_list")).json.secrets).toEqual([])
+    const r = await h.call("untrace_secret_get", { name: "github/token", shared: true })
     expect(r.isError).toBe(false)
-    expect(r.json.value).toBe(VALUE)
-    const l = await h.call("untrace_secret_list")
+    expect(r.json).toMatchObject({ value: VALUE, shared: true, id: f.folderId })
+    const byId = await h.call("untrace_secret_get", { name: "github/token", id: f.folderId })
+    expect(byId.json).toMatchObject({ value: VALUE, shared: true })
+    const l = await h.call("untrace_secret_list", { includeShared: true })
     expect(l.json.secrets).toEqual([expect.objectContaining({ name: "github/token", shared: true, role: "viewer", version: 1 })])
   })
 })
@@ -218,11 +223,11 @@ describe("untrace_secret_share and untrace_secret_unshare", () => {
   it("unshare removes the key's entry; unsharing again is refused", async () => {
     const s = await h.call("untrace_secret_set", { name: "openai", value: VALUE })
     await h.call("untrace_secret_share", { name: "openai", clientId: OTHER_CLIENT, publicKey: OTHER_PUB, role: "editor" })
-    const r = await h.call("untrace_secret_unshare", { name: "openai", clientId: OTHER_CLIENT })
+    const r = await h.call("untrace_secret_unshare", { name: "openai", clientId: OTHER_CLIENT, confirm: true })
     expect(r.isError).toBe(false)
     expect(r.json).toMatchObject({ name: "openai", clientId: OTHER_CLIENT, removed: true })
     expect(drive.folders.get(s.json.id)!.entries.some((e) => e.keyId === OTHER_CLIENT)).toBe(false)
-    const again = await h.call("untrace_secret_unshare", { name: "openai", clientId: OTHER_CLIENT })
+    const again = await h.call("untrace_secret_unshare", { name: "openai", clientId: OTHER_CLIENT, confirm: true })
     expect(again.text).toMatch(/^refused: .*not shared with/)
   })
 
@@ -232,7 +237,7 @@ describe("untrace_secret_share and untrace_secret_unshare", () => {
     const v1 = [...drive.files.values()].find((f) => f.folderId === s.json.id)!
     ;(v1.entries ??= []).push({ entryId: crypto.randomUUID(), keyType: "client", keyId: OTHER_CLIENT, role: "editor", scopes: ["download"], sealedKey: null, createdAt: new Date().toISOString() })
     v1.role = "admin"
-    const r = await h.call("untrace_secret_unshare", { name: "openai", clientId: OTHER_CLIENT })
+    const r = await h.call("untrace_secret_unshare", { name: "openai", clientId: OTHER_CLIENT, confirm: true })
     expect(r.json.versionEntriesRemoved).toBe(1)
     expect(v1.entries!.some((e) => e.keyId === OTHER_CLIENT)).toBe(false)
   })
@@ -243,6 +248,100 @@ describe("untrace_secret_share and untrace_secret_unshare", () => {
     expect(by.untrace_secret_unshare!.annotations!.destructiveHint).toBe(true)
     expect(by.untrace_secret_list!.annotations!.readOnlyHint).toBe(true)
     expect(by.untrace_secret_get!.annotations!.readOnlyHint).toBe(true)
+  })
+})
+
+describe("own vault first: look-alike and foreign shared folders (review of PR #5, blocker 1)", () => {
+  /** A top-level folder another key shared with this key, holding v1 written by that key. */
+  async function plantShared(name: string, opts: { role?: "viewer" | "editor" | "admin"; foreign?: boolean } = {}) {
+    const f = await drive.addFolder({ name, mine: true, role: "admin", foreign: opts.foreign })
+    const writer = new UntraceClient({ clientId: CLIENT_ID, clientSecret: SECRET, baseUrl: BASE, fetch: drive.handler, maxRetries: 0 })
+    const wasForeign = f.foreign
+    f.foreign = false
+    await writer.files.upload({ folderId: f.folderId, data: new TextEncoder().encode(`${VALUE}-planted`), name: "v1", mime: SECRET_MIME })
+    if (wasForeign) f.foreign = true
+    f.entries[0]!.role = opts.role ?? "editor"
+    return f
+  }
+  const filesIn = (folderId: string) => [...drive.files.values()].filter((x) => x.folderId === folderId)
+
+  it("set never writes into a planted look-alike shared folder: it goes to the own vault", async () => {
+    const planted = await plantShared("openai", { role: "editor" })
+    const r = await h.call("untrace_secret_set", { name: "openai", value: VALUE })
+    expect(r.isError).toBe(false)
+    expect(r.json).toMatchObject({ name: "openai", version: 1, shared: false })
+    expect(r.json.id).not.toBe(planted.folderId)
+    expect(filesIn(planted.folderId)).toHaveLength(1)
+    const own = folderNamed("openai", folderNamed("secrets", folderNamed(".untrace", null)!.folderId)!.folderId)!
+    expect(r.json.id).toBe(own.folderId)
+    expect(filesIn(own.folderId).map((f) => f.name)).toEqual(["v1"])
+    // And the own value is what get returns, never the planted one.
+    expect((await h.call("untrace_secret_get", { name: "openai" })).json).toMatchObject({ value: VALUE, shared: false, id: own.folderId })
+  })
+
+  it("a planted look-alike shared folder does not answer get for a name the user has not set", async () => {
+    await plantShared("anthropic")
+    const r = await h.call("untrace_secret_get", { name: "anthropic" })
+    expect(r.isError).toBe(true)
+    expect(r.text).toMatch(/^refused: .*no secret named anthropic in this key's vault/)
+    expect(r.text).not.toContain(VALUE)
+    expect(drive.requests.some((q) => q.url.includes("/content"))).toBe(false)
+    // list does not show it either, unless asked for shared secrets.
+    expect((await h.call("untrace_secret_list")).json.secrets).toEqual([])
+    expect((await h.call("untrace_secret_list", { includeShared: true })).json.secrets).toEqual([expect.objectContaining({ name: "anthropic", shared: true })])
+    // share and unshare act on the own vault only, too.
+    expect((await h.call("untrace_secret_share", { name: "anthropic", clientId: OTHER_CLIENT, publicKey: OTHER_PUB, role: "viewer" })).text).toMatch(/^refused: .*in this key's vault/)
+  })
+
+  it("own and shared secrets with the same name are listed apart, own first", async () => {
+    const planted = await plantShared("openai")
+    const s = await h.call("untrace_secret_set", { name: "openai", value: VALUE })
+    const l = await h.call("untrace_secret_list", { includeShared: true })
+    expect(l.json.secrets).toEqual([
+      expect.objectContaining({ name: "openai", id: s.json.id, shared: false }),
+      expect.objectContaining({ name: "openai", id: planted.folderId, shared: true }),
+    ])
+  })
+
+  it("a shared folder of a different owner is ignored by default and refused for an explicit write", async () => {
+    const foreign = await plantShared("stripe", { role: "editor", foreign: true })
+    expect((await h.call("untrace_secret_get", { name: "stripe" })).isError).toBe(true)
+    expect((await h.call("untrace_secret_list")).json.secrets).toEqual([])
+    // Default set: own vault, never the foreign folder.
+    const own = await h.call("untrace_secret_set", { name: "stripe", value: VALUE })
+    expect(own.json).toMatchObject({ shared: false })
+    expect(own.json.id).not.toBe(foreign.folderId)
+    // Explicit shared write: Drive refuses a folder of another owner; nothing is stored.
+    const r = await h.call("untrace_secret_set", { name: "stripe", value: `${VALUE}-2`, id: foreign.folderId })
+    expect(r.isError).toBe(true)
+    expect(r.text).toMatch(/^refused: .*belongs to this key's own owner/)
+    expect(r.text).not.toContain(VALUE)
+    expect(filesIn(foreign.folderId)).toHaveLength(1)
+  })
+
+  it("an explicit shared write into a same-owner folder adds the next version there", async () => {
+    const f = await plantShared("github/token", { role: "editor" })
+    const r = await h.call("untrace_secret_set", { name: "github/token", value: `${VALUE}-rotated`, shared: true })
+    expect(r.isError).toBe(false)
+    expect(r.json).toMatchObject({ name: "github/token", id: f.folderId, version: 2, shared: true })
+    expect(filesIn(f.folderId).map((x) => x.name).sort()).toEqual(["v1", "v2"])
+    expect(folderNamed(".untrace", null)).toBeUndefined()
+    const g = await h.call("untrace_secret_get", { name: "github/token", id: f.folderId })
+    expect(g.json).toMatchObject({ value: `${VALUE}-rotated`, version: 2, shared: true })
+  })
+
+  it("an explicit shared write is refused for a viewer, and for an unknown shared name", async () => {
+    await plantShared("ro", { role: "viewer" })
+    expect((await h.call("untrace_secret_set", { name: "ro", value: VALUE, shared: true })).text).toMatch(/^refused: .*viewer/)
+    expect((await h.call("untrace_secret_set", { name: "nope", value: VALUE, shared: true })).text).toMatch(/^refused: .*is shared with this key/)
+    expect(folderNamed(".untrace", null)).toBeUndefined()
+  })
+
+  it("share enforces the same owner: a key of another account is refused", async () => {
+    await h.call("untrace_secret_set", { name: "openai", value: VALUE })
+    const r = await h.call("untrace_secret_share", { name: "openai", clientId: FOREIGN_CLIENT, publicKey: OTHER_PUB, role: "viewer" })
+    expect(r.isError).toBe(true)
+    expect(r.text).toMatch(/^refused: .*own owner/)
   })
 })
 
@@ -271,9 +370,9 @@ describe("secret redaction", () => {
     const f = await drive.addFolder({ name: "shared-key", mine: true })
     await client.files.upload({ folderId: f.folderId, data: new TextEncoder().encode(VALUE), name: "v1", mime: SECRET_MIME })
     forgetSecretValues()
-    const g = await h.call("untrace_secret_get", { name: "shared-key" })
+    const g = await h.call("untrace_secret_get", { name: "shared-key", shared: true })
     expect(g.json.value).toBe(VALUE)
-    const again = await h.call("untrace_secret_get", { name: "shared-key" })
+    const again = await h.call("untrace_secret_get", { name: "shared-key", shared: true })
     expect(again.json.value).toBe(VALUE)
     expect(again.text.split(VALUE)).toHaveLength(2)
     expect(configuredSecrets({})).toContain(VALUE)

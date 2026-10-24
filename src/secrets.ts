@@ -18,8 +18,27 @@
  * A key that was given a secret by another key of the same owner holds an entry on the secret's
  * folder only, so that folder shows up in its own top-level list. Those are recognised by the
  * secret file inside them.
+ *
+ * Own vault first, shared only on request (review of PR #5):
+ * - `set` writes only into this key's own `/.untrace/secrets/<name>` (made when missing). It
+ *   never writes into a shared folder unless the caller passes `shared: true` or the folder `id`.
+ * - `get`, `share` and `unshare` read this key's own vault. A shared secret answers only when
+ *   the caller asks for it (`shared: true` or `id`), and the answer says `shared: true`. A folder
+ *   that merely looks like a secret can therefore never answer for a name the user has not set.
+ * - `list` shows the own vault; shared secrets only with `includeShared: true`, marked shared.
+ *
+ * Same owner, where it is enforced: Drive API v1 never tells a reader who owns a folder, so this
+ * client cannot check it on a read. Drive checks it on every write that matters here:
+ * - attaching a key (`untrace_secret_share`): Drive attaches only keys held by the caller's own
+ *   owner (untrace-drive lib/cloud/multikey/entries.ts addEntry, `foreign_key_attach` -> 404);
+ * - writing a version (`set` with `shared: true`): Drive uploads only into a folder of the key's
+ *   own owner (untrace-drive lib/cloud/public-api/folder-access.ts canCreateInFolder -> 403).
+ * Both answers become a plain refusal here. A folder of another owner can only reach this key
+ * through a share offer this key itself accepted, and it never answers unless asked for.
  */
 import type { EntryRole, FileSummary, Folder, GrantRole, KeyEntry } from "@untracenetwork/sdk"
+
+import { UntraceFolderAccessError, UntraceNotFoundError } from "@untracenetwork/sdk"
 
 import { ToolRefusal } from "./errors"
 import { rememberSecretValue } from "./redact"
@@ -109,6 +128,15 @@ export async function versionsIn(c: UntraceLike, folderId: string): Promise<Secr
   return out.sort((a, b) => b.version - a.version || b.createdAt.localeCompare(a.createdAt))
 }
 
+export interface SecretTarget {
+  /** Use a secret shared with this key instead of this key's own vault. */
+  shared?: boolean
+  /** The shared secret's folder id (from untrace_secret_list with includeShared). Implies shared. */
+  id?: string
+}
+
+const wantsShared = (t: SecretTarget | undefined) => Boolean(t && (t.shared === true || typeof t.id === "string"))
+
 export class Vault {
   constructor(private readonly c: UntraceLike) {}
 
@@ -127,9 +155,12 @@ export class Vault {
   }
 
   /**
-   * Secret folders shared with this key by another key. Such a folder sits in the other key's
-   * vault, and this key holds an entry on it directly, so it shows up in this key's top-level
-   * list. It is recognised by its name and the secret file inside it.
+   * Folders shared with this key that look like a secret: a top-level folder of this key's list
+   * (it holds an entry on it directly) with a valid secret name and a secret file inside. Never
+   * used unless the caller asks for shared secrets.
+   *
+   * Cost: one files.list per candidate top-level folder (N+1 calls). Fine for v0; a vault API in
+   * Drive would replace it.
    */
   async sharedFolders(ownRootId: string | null): Promise<Folder[]> {
     const out: Folder[] = []
@@ -146,65 +177,101 @@ export class Vault {
     return out.sort(oldestFirst)
   }
 
-  /** Find a secret by name: this key's own vault first, then secrets shared with it. */
-  async find(name: string): Promise<SecretFolder | null> {
+  /** A secret in this key's own vault, or null. Never looks at shared folders. */
+  async findOwn(name: string, root?: Folder | null): Promise<Folder | null> {
+    const r = root === undefined ? await this.secretsRoot(false) : root
+    if (!r) return null
+    return (await allFolders(this.c, r.folderId)).filter((f) => f.name === name).sort(oldestFirst)[0] ?? null
+  }
+
+  /** A secret shared with this key, asked for by name (and folder id when given). */
+  async findShared(name: string, id?: string): Promise<Folder> {
     const root = await this.secretsRoot(false)
-    if (root) {
-      const own = (await allFolders(this.c, root.folderId)).filter((f) => f.name === name).sort(oldestFirst)
-      if (own[0]) return { folder: own[0], shared: false }
+    const hits = (await this.sharedFolders(root?.folderId ?? null)).filter((f) => f.name === name && (id === undefined || f.folderId === id))
+    if (hits.length === 0) {
+      throw new ToolRefusal(
+        `Refused: no secret named ${name}${id ? ` with id ${id}` : ""} is shared with this key. untrace_secret_list with includeShared: true shows the shared ones.`
+      )
     }
-    const shared = (await this.sharedFolders(root?.folderId ?? null)).filter((f) => f.name === name)
-    return shared[0] ? { folder: shared[0], shared: true } : null
+    if (hits.length > 1) throw new ToolRefusal(`Refused: more than one shared secret is named ${name}. Pass its id from untrace_secret_list with includeShared: true.`)
+    return hits[0]!
   }
 
-  async require(name: string): Promise<SecretFolder> {
-    const s = await this.find(name)
-    if (!s) throw new ToolRefusal(`Refused: no secret named ${name} that this key can reach. untrace_secret_list shows the names.`)
-    return s
+  /** Own vault by default; a shared secret only when `target` asks for one. */
+  async resolve(name: string, target?: SecretTarget): Promise<SecretFolder> {
+    if (wantsShared(target)) return { folder: await this.findShared(name, target!.id), shared: true }
+    const own = await this.findOwn(name)
+    if (!own) {
+      throw new ToolRefusal(
+        `Refused: no secret named ${name} in this key's vault. untrace_secret_list shows the names. If another key of the same owner shared it with this key, call again with shared: true.`
+      )
+    }
+    return { folder: own, shared: false }
   }
 
-  async set(name: string, value: string): Promise<{ name: string; id: string; version: number; createdAt: string; shared: boolean }> {
+  async set(
+    name: string,
+    value: string,
+    target?: SecretTarget
+  ): Promise<{ name: string; id: string; version: number; createdAt: string; shared: boolean }> {
     rememberSecretValue(value)
-    const existing = await this.find(name)
     let folder: Folder
     let shared = false
-    if (existing) {
-      folder = existing.folder
-      shared = existing.shared
+    if (wantsShared(target)) {
+      folder = await this.findShared(name, target!.id)
+      shared = true
+      if (folder.role === "viewer") throw new ToolRefusal(`Refused: this key is a viewer of the shared secret ${name}, so it cannot set a new version. Nothing was stored.`)
     } else {
+      // Own vault only. A shared folder with the same name is never written to by default.
       const root = (await this.secretsRoot(true))!
-      folder = await this.c.folders.create({ name, parentId: root.folderId })
+      folder = (await this.findOwn(name, root)) ?? (await this.c.folders.create({ name, parentId: root.folderId }))
     }
     const versions = await versionsIn(this.c, folder.folderId)
     const version = (versions[0]?.version ?? 0) + 1
-    const r = await this.c.files.upload({ folderId: folder.folderId, data: new TextEncoder().encode(value), name: `v${version}`, mime: SECRET_MIME })
-    return { name, id: folder.folderId, version, createdAt: r.file.createdAt, shared }
+    let createdAt: string
+    try {
+      const r = await this.c.files.upload({ folderId: folder.folderId, data: new TextEncoder().encode(value), name: `v${version}`, mime: SECRET_MIME })
+      createdAt = r.file.createdAt
+    } catch (err) {
+      // Drive uploads only into a folder of this key's own owner (folder-access.ts).
+      if (shared && err instanceof UntraceFolderAccessError) {
+        throw new ToolRefusal(
+          `Refused: Untrace stores a new version only in a shared secret that belongs to this key's own owner, where this key is editor or admin. ${name} (${folder.folderId}) does not qualify. Nothing was stored.`
+        )
+      }
+      throw err
+    }
+    return { name, id: folder.folderId, version, createdAt, shared }
   }
 
-  async get(name: string): Promise<{ name: string; value: string; id: string; version: number; createdAt: string }> {
-    const { folder } = await this.require(name)
+  async get(name: string, target?: SecretTarget): Promise<{ name: string; value: string; id: string; version: number; createdAt: string; shared: boolean }> {
+    const { folder, shared } = await this.resolve(name, target)
     const latest = (await versionsIn(this.c, folder.folderId))[0]
     if (!latest) throw new ToolRefusal(`Refused: the secret ${name} has no value yet. Set it with untrace_secret_set.`)
     const r = await this.c.files.download(latest.fileId)
     const value = new TextDecoder().decode(r.bytes)
     rememberSecretValue(value)
-    return { name, value, id: folder.folderId, version: latest.version, createdAt: latest.createdAt }
+    return { name, value, id: folder.folderId, version: latest.version, createdAt: latest.createdAt, shared }
   }
 
-  async list(): Promise<Array<{ name: string; id: string; role: string; version: number; updatedAt: string | null; createdAt: string; shared: boolean }>> {
+  async list(opts: { includeShared?: boolean } = {}): Promise<
+    Array<{ name: string; id: string; role: string; version: number; updatedAt: string | null; createdAt: string; shared: boolean }>
+  > {
     const root = await this.secretsRoot(false)
     const own = root ? await allFolders(this.c, root.folderId) : []
-    const shared = await this.sharedFolders(root?.folderId ?? null)
+    const shared = opts.includeShared ? await this.sharedFolders(root?.folderId ?? null) : []
     const out = []
-    const seen = new Set<string>()
-    for (const [folder, isShared] of [...own.map((f) => [f, false] as const), ...shared.map((f) => [f, true] as const)]) {
-      if (seen.has(folder.name)) continue
+    const seenOwn = new Set<string>()
+    for (const [folder, isShared] of [...own.sort(oldestFirst).map((f) => [f, false] as const), ...shared.map((f) => [f, true] as const)]) {
       try {
         validateSecretName(folder.name)
       } catch {
         continue
       }
-      seen.add(folder.name)
+      if (!isShared) {
+        if (seenOwn.has(folder.name)) continue
+        seenOwn.add(folder.name)
+      }
       const latest = (await versionsIn(this.c, folder.folderId))[0]
       out.push({
         name: folder.name,
@@ -216,11 +283,11 @@ export class Vault {
         shared: isShared,
       })
     }
-    return out.sort((a, b) => a.name.localeCompare(b.name))
+    return out.sort((a, b) => a.name.localeCompare(b.name) || Number(a.shared) - Number(b.shared))
   }
 
-  async share(name: string, clientId: string, publicKey: string, role: GrantRole): Promise<{ name: string; id: string; entry: KeyEntry }> {
-    const { folder } = await this.require(name)
+  async share(name: string, clientId: string, publicKey: string, role: GrantRole, target?: SecretTarget): Promise<{ name: string; id: string; entry: KeyEntry }> {
+    const { folder } = await this.resolve(name, target)
     const ref = { type: "folder" as const, id: folder.folderId }
     const scopes = role === "viewer" ? (["download"] as const) : role === "editor" ? (["download", "upload"] as const) : (["download", "upload", "manage-sharing"] as const)
     const current = (await this.c.keys.list(ref)).find((e) => e.keyType === "client" && e.keyId === clientId)
@@ -228,12 +295,28 @@ export class Vault {
       const entry = await this.c.keys.change(ref, current.entryId, { role: role as EntryRole, scopes: [...scopes] })
       return { name, id: folder.folderId, entry }
     }
-    const entry = await this.c.keys.attach(ref, { keyType: "client", keyId: clientId, role, scopes: [...scopes], publicKey })
-    return { name, id: folder.folderId, entry }
+    try {
+      const entry = await this.c.keys.attach(ref, { keyType: "client", keyId: clientId, role, scopes: [...scopes], publicKey })
+      return { name, id: folder.folderId, entry }
+    } catch (err) {
+      // Same owner is enforced by Drive: it attaches only keys held by the caller's own owner
+      // (untrace-drive lib/cloud/multikey/entries.ts, foreign_key_attach -> 404). This key can
+      // already manage the folder (keys.list above answered), so a 404 here means that.
+      if (err instanceof UntraceNotFoundError) {
+        throw new ToolRefusal(
+          `Refused: Untrace shares a secret only with another developer key of this key's own owner, and ${clientId} is not one (or it was revoked). To give a secret to a person or another account, use Untrace Drive.`
+        )
+      }
+      throw err
+    }
   }
 
-  async unshare(name: string, clientId: string): Promise<{ name: string; id: string; clientId: string; removed: true; versionEntriesRemoved: number }> {
-    const { folder } = await this.require(name)
+  async unshare(
+    name: string,
+    clientId: string,
+    target?: SecretTarget
+  ): Promise<{ name: string; id: string; clientId: string; removed: true; versionEntriesRemoved: number }> {
+    const { folder } = await this.resolve(name, target)
     const ref = { type: "folder" as const, id: folder.folderId }
     const current = (await this.c.keys.list(ref)).find((e) => e.keyType === "client" && e.keyId === clientId)
     if (!current) throw new ToolRefusal(`Refused: the secret ${name} is not shared with ${clientId}.`)
