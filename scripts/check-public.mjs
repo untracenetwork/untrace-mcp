@@ -49,7 +49,9 @@ const HASHING = /createHash|randomBytes|timingSafeEqual/
 const SECRET = re(
   j("BEGIN [A-Z ]*PRIVATE ", "KEY|untrace", "_sk_v1_|gh", "p_[A-Za-z0-9]{30,}|github", "_pat_|np", "m_[A-Za-z0-9]{30,}|sk", "_live_|sk", "_test_|AK", "IA[0-9A-Z]{16}")
 )
-const PRIVATE_INFRA = re(j("core", "-pm|\\.inter", "nal\\b|34\\.", "9\\.|neon\\.", "tech|untrace-sha", "rds|ai", "team|([0-9]{1,3}\\.){3}[0-9]{1,3}"))
+// The public domain aiteam.space is allowed: it is the one connected project in the agent claim
+// (src/agent/claim.ts CONNECTED_PROJECTS). Any other use of the name (repos, hosts) still fails.
+const PRIVATE_INFRA = re(j("core", "-pm|\\.inter", "nal\\b|34\\.", "9\\.|neon\\.", "tech|untrace-sha", "rds|ai", "team(?!\\.space\\b)|([0-9]{1,3}\\.){3}[0-9]{1,3}"))
 const NATIVE = /\.(rs|c|cc|cpp|so|dylib|dll|a|wasm)$|(^|\/)Cargo\.(toml|lock)$|crates\/|untrace-cli\/|untrace-core-ffi\/|flavors\//
 
 const hits = []

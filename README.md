@@ -98,6 +98,10 @@ The key is made on this machine (or the one from `agent init` is reused). Drive 
 and signatures only. The owner compares the fingerprint, can narrow what is asked for, and
 approves. The link works once and expires after 15 minutes.
 
+Connected project: an agent that works for aiteam.space adds `--project aiteam.space` (or sets
+`UNTRACE_AGENT_PROJECT=aiteam.space`). The project is signed into the claim and the owner sees it
+in Drive. Other values are refused. See `docs/AGENT-PAIRING.md`.
+
 ## 2. Environment variables
 
 | Variable | Mode | Meaning |

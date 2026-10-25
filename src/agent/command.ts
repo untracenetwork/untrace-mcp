@@ -2,7 +2,7 @@
  * `untrace-mcp agent <init|code|claim|status>`: create this agent's developer key on THIS machine and
  * pair it with an Untrace Drive account. docs/AGENT-PAIRING.md.
  *
- *   agent claim <link> --want <category:id[:mode]> ... [--label <name>] [--runs-on <text>] [--wait]
+ *   agent claim <link> --want <category:id[:mode]> ... [--label <name>] [--runs-on <text>] [--project <name>] [--wait]
  *      claim a one-time agent link from Drive (Settings > Developer > Give your agent access)
  *
  *   agent init [--label <name>] [--scopes download,upload] [--ttl <minutes>] [--force]
@@ -18,7 +18,7 @@ import { hostname } from "node:os"
 
 import { UntraceClient } from "@untracenetwork/sdk"
 
-import { claimAgentLink, parseWant, type RequestedItem } from "./claim"
+import { claimAgentLink, CONNECTED_PROJECTS, parseProject, parseWant, type RequestedItem } from "./claim"
 import { agentSigner, fingerprint, newClientId, newSecret, randomNonce } from "./keys"
 import { encodePairingCode, LABEL_MAX, PAIRING_SCOPES, PAIRING_TTL_SECONDS, parseScopeList, validLabel, type PairingScope } from "./pairing"
 import { AgentStore, type AgentRecord } from "./store"
@@ -34,6 +34,8 @@ export interface AgentIo {
   sleep?(ms: number): Promise<void>
   /** Probe whether Drive accepts this key. Injected in tests. */
   probe?(clientId: string, secret: string): Promise<"paired" | "pending" | "unreachable">
+  /** Environment for UNTRACE_BASE_URL and UNTRACE_AGENT_PROJECT (default process.env). Injected in tests. */
+  env?: NodeJS.ProcessEnv
 }
 
 export const AGENT_HELP = [
@@ -43,11 +45,12 @@ export const AGENT_HELP = [
   "      create the key here, store it in the OS keychain (or a 0600 file), print a pairing code",
   "  untrace-mcp agent code [--scopes ...] [--ttl <minutes>]",
   "      print a fresh pairing code for the existing key",
-  "  untrace-mcp agent claim <link> --want <category:id[:mode][=Name]> ... [--label <name>] [--runs-on <text>] [--wait]",
+  "  untrace-mcp agent claim <link> --want <category:id[:mode][=Name]> ... [--label <name>] [--runs-on <text>] [--project <name>] [--wait]",
   "      claim a one-time agent link the owner made in Drive (Settings > Developer > Give your agent access)",
   "      e.g. --want files:<folder id>:read_write --want vault:<entry id>=OPENAI_API_KEY --want mail:agent@acme.com",
   "      categories: files, vault (add :totp for a 2FA code), mail. Modes: read (default), write, read_write.",
   "      Uses this machine's agent key, or creates one. --wait waits for the owner to approve.",
+  `      --project names the connected project the agent works for (${CONNECTED_PROJECTS.join(", ")}). Default: UNTRACE_AGENT_PROJECT.`,
   "  untrace-mcp agent status [--offline]",
   "      show the fingerprint, where the key is stored, and whether Drive has approved it",
   "",
@@ -64,6 +67,7 @@ interface Flags {
   offline: boolean
   wants: RequestedItem[]
   runsOn?: string
+  project?: string
   wait: boolean
   positional: string[]
 }
@@ -85,6 +89,7 @@ export function parseFlags(args: string[]): Flags {
     else if (name === "--offline") f.offline = true
     else if (name === "--want") f.wants.push(parseWant(value()))
     else if (name === "--runs-on") f.runsOn = value()
+    else if (name === "--project") f.project = value()
     else if (name === "--wait") f.wait = true
     else if (!a.startsWith("-")) f.positional.push(a)
     else throw new Error(`unknown option ${a}. See untrace-mcp agent --help.`)
@@ -210,9 +215,13 @@ export async function runAgent(args: string[], io: AgentIo): Promise<number> {
   if (sub === "status") return status(io, f)
   if (sub === "claim") {
     if (f.positional.length !== 1) throw new Error("usage: untrace-mcp agent claim <link> --want <category:id[:mode]>. See agent --help.")
+    const env = io.env ?? process.env
+    // The flag wins over UNTRACE_AGENT_PROJECT. Both are checked before any network call.
+    if (f.project !== undefined && f.project.trim() === "") throw new Error("--project needs a value")
+    const project = f.project !== undefined ? parseProject(f.project, "--project") : parseProject(env.UNTRACE_AGENT_PROJECT, "UNTRACE_AGENT_PROJECT")
     return claimAgentLink(
       { ...io, probe: io.probe ?? probeDrive },
-      { link: f.positional[0], wants: f.wants, label: f.label, runsOn: f.runsOn, wait: f.wait, baseUrl: io.baseUrl ?? process.env.UNTRACE_BASE_URL }
+      { link: f.positional[0], wants: f.wants, label: f.label, runsOn: f.runsOn, wait: f.wait, project, baseUrl: io.baseUrl ?? env.UNTRACE_BASE_URL }
     )
   }
   throw new Error(`unknown agent command ${sub}. See untrace-mcp agent --help.`)
