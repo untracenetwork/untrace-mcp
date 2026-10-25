@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// CI ONLY. @untracenetwork/sdk 2.0.0 is not on npm yet, and untracenetwork/untrace-sdk is a
-// private repo the default GITHUB_TOKEN of this repo cannot check out. Until the SDK is
-// published, CI installs a tarball of packages/core built from untrace-sdk main ceb6ea4 (PR
-// untrace-sdk#7, same tree as feat/oauth-option-b f13d80c, typed from Drive main 1b18365),
-// committed at ci/vendor/. This script checks its sha256 and points the
+// CI ONLY. @untracenetwork/sdk 2.0.0 is not on npm yet. The SDK source is public at
+// github.com/untracenetwork/untrace-sdk, but this repo pins the exact bytes it tests against
+// instead of building the SDK from git in CI. Until the SDK is published, CI installs a
+// tarball of packages/core built from untrace-sdk main ceb6ea4 (PR untrace-sdk#7, same tree
+// as feat/oauth-option-b f13d80c, typed from Drive main 1b18365), committed at ci/vendor/.
+// That packages/core tree (595f209) is the one the public untrace-sdk 25b9917 carries. This script checks its sha256 and points the
 // dependency at it for the CI install only. The published package.json keeps "^2.0.0"
 // (test/release.test.ts and scripts/check-pack.mjs enforce that).
 //
