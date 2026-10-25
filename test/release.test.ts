@@ -111,7 +111,7 @@ describe("workflows", () => {
 })
 
 describe("docs copy rules", () => {
-  const docs = ["README.md", "llms.txt", "SKILL.md", "CHANGELOG.md", "docs/DEVELOPMENT.md", "docs/RELEASING.md"]
+  const docs = ["README.md", "llms.txt", "SKILL.md", "CHANGELOG.md", "docs/DEVELOPMENT.md", "docs/RELEASING.md", "docs/AGENT-PAIRING.md"]
   it.each(docs)("%s has no em dashes, certifications, storage internals or authorized devices", (f) => {
     const s = read(f)
     expect(s).not.toMatch(/\u2014/)
