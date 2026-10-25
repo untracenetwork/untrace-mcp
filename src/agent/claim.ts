@@ -25,6 +25,24 @@ import type { AgentStore, AgentRecord } from "./store"
 export const DEFAULT_DRIVE = "https://drive.untrace.network"
 export const CLAIM_SIGN_PREFIX = "untrace:agent-link-claim:v1"
 
+/**
+ * Connected projects: the fixed list of projects an agent may say it connects from. Mirrors
+ * Drive's CONNECTED_PROJECTS (lib/cloud/agent-links/projects.ts). Drive refuses anything else
+ * with 400 invalid_project, so this list must stay in step with it.
+ */
+export const CONNECTED_PROJECTS = ["aiteam.space"] as const
+export type ConnectedProject = (typeof CONNECTED_PROJECTS)[number]
+
+/** Undefined or empty = no project. Anything outside CONNECTED_PROJECTS throws. */
+export function parseProject(v: string | undefined, source = "--project"): ConnectedProject | undefined {
+  if (v === undefined || v.trim() === "") return undefined
+  const t = v.trim()
+  if (!(CONNECTED_PROJECTS as readonly string[]).includes(t)) {
+    throw new Error(`${source} ${JSON.stringify(t)} is not a connected project. Allowed: ${CONNECTED_PROJECTS.join(", ")}`)
+  }
+  return t as ConnectedProject
+}
+
 export const CATEGORIES = ["vault", "files", "mail"] as const
 export const MODES = ["read", "write", "read_write"] as const
 export type Category = (typeof CATEGORIES)[number]
@@ -120,10 +138,29 @@ export function checkWants(items: RequestedItem[]): RequestedItem[] {
   return items
 }
 
-/** Byte for byte Drive's claimMessage() (lib/cloud/agent-links/rules.ts). */
-export function claimMessage(a: { linkId: string; clientId: string; signPublicKey: string; boxPublicKey: string; requested: RequestedItem[] }): string {
+/**
+ * Byte for byte Drive's claimMessage() (lib/cloud/agent-links/rules.ts). The `project: <name>` line
+ * is there only when a project is set; without one the message is the same as before.
+ */
+export function claimMessage(a: {
+  linkId: string
+  clientId: string
+  signPublicKey: string
+  boxPublicKey: string
+  requested: RequestedItem[]
+  project?: string | null
+}): string {
   const req = a.requested.map((r) => [r.category, r.resource, r.mode, r.kind ?? ""].join("|")).join("\n")
-  return [CLAIM_SIGN_PREFIX, `link: ${a.linkId}`, `client: ${a.clientId}`, `sign: ${a.signPublicKey}`, `box: ${a.boxPublicKey}`, "requested:", req].join("\n")
+  return [
+    CLAIM_SIGN_PREFIX,
+    `link: ${a.linkId}`,
+    `client: ${a.clientId}`,
+    `sign: ${a.signPublicKey}`,
+    `box: ${a.boxPublicKey}`,
+    ...(a.project ? [`project: ${a.project}`] : []),
+    "requested:",
+    req,
+  ].join("\n")
 }
 
 /** Developer key scopes the agent's Files items could end up with (record only; Drive decides). */
@@ -155,6 +192,8 @@ export interface ClaimOptions {
   baseUrl?: string
   wait?: boolean
   waitMs?: number
+  /** Connected project (CONNECTED_PROJECTS). Signed into the claim and sent only when set. */
+  project?: string
 }
 
 const ERRORS: Record<number, string> = {
@@ -179,6 +218,7 @@ async function agentKey(io: ClaimIo, label: string, scopes: string[]): Promise<{
 export async function claimAgentLink(io: ClaimIo, o: ClaimOptions): Promise<number> {
   const link = parseAgentLink(o.link, o.baseUrl ?? DEFAULT_DRIVE)
   const wants = checkWants(o.wants)
+  const project = parseProject(o.project)
   const label = (o.label ?? `Agent on ${hostname()}`).replace(CONTROL_RE, "").trim().slice(0, LABEL_MAX).trim()
   if (!validLabel(label)) throw new Error(`--label must be 1 to ${LABEL_MAX} characters, no control characters`)
   const runsOn = o.runsOn === undefined ? `untrace-mcp on ${hostname()}`.slice(0, RUNS_ON_MAX) : cleanText(o.runsOn, RUNS_ON_MAX)
@@ -197,11 +237,12 @@ export async function claimAgentLink(io: ClaimIo, o: ClaimOptions): Promise<numb
     keySignature: b64(signer.sign(keySignMessage(rec.clientId, signer.boxPublicKey))),
     oauthHash: signer.oauthHash,
     claimSignature: b64(
-      signer.sign(new TextEncoder().encode(claimMessage({ linkId: link.id, clientId: rec.clientId, signPublicKey, boxPublicKey, requested: wants })))
+      signer.sign(new TextEncoder().encode(claimMessage({ linkId: link.id, clientId: rec.clientId, signPublicKey, boxPublicKey, requested: wants, project })))
     ),
     agentName: label,
     runsOn,
     requested: wants,
+    ...(project ? { project } : {}),
   }
 
   const res = await (io.fetch ?? fetch)(`${link.origin}/api/agent-links/${link.id}/claim`, {
@@ -228,6 +269,7 @@ export async function claimAgentLink(io: ClaimIo, o: ClaimOptions): Promise<numb
   io.out("")
   io.out(`Fingerprint: ${fp}   (the owner checks Drive shows the same)`)
   io.out(`Name:        ${label}`)
+  if (project) io.out(`Project:     ${project}`)
   io.out(`Asks for:    ${wants.map((w) => `${w.category} ${w.name} (${w.mode.replace("_", "+")})`).join(", ")}`)
 
   if (!o.wait) {

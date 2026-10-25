@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Connected project: `agent claim --project aiteam.space` (or `UNTRACE_AGENT_PROJECT`, the flag
+  wins) names the project the agent works for. It is sent as `project` and signed into the claim as
+  a `project:` line, the same as Drive. Only `aiteam.space` is accepted; anything else is refused
+  before any request. Without a project the request and the signed message are unchanged.
 - Secrets v0: `untrace_secret_set`, `untrace_secret_get`, `untrace_secret_list`,
   `untrace_secret_share`, `untrace_secret_unshare`. A secret is a small encrypted file in a reserved
   `.untrace/secrets/<name>` folder of the owner's Drive, made and opened by the SDK like any file,

@@ -92,7 +92,7 @@ npx -y @untracenetwork/mcp agent claim "<link>" \
   --want vault:<entry id>=OPENAI_API_KEY \
   --want vault:<entry id>:totp=GitHub 2FA \
   --want mail:agent@acme.com \
-  [--label "Codex on laptop"] [--runs-on "Codex CLI"] [--wait]
+  [--label "Codex on laptop"] [--runs-on "Codex CLI"] [--project aiteam.space] [--wait]
 ```
 
 - `--want category:id[:mode][=Name]`. Categories: `files`, `vault` (add `:totp` for a 2FA code,
@@ -115,6 +115,7 @@ The request is `POST {origin}/api/agent-links/{id}/claim` with JSON:
 | `claimSignature` | Ed25519 over the claim message below |
 | `agentName`, `runsOn` | what the owner sees |
 | `requested` | `[{ category, resource, mode, name, kind? }]` |
+| `project` | only when set: the connected project, e.g. `aiteam.space` |
 
 Claim message (lines joined by `\n`; one `category|resource|mode|kind` line per item, `kind`
 empty unless set):
@@ -136,4 +137,34 @@ secret, `410` = used, expired or cancelled, `429` = too many tries on this link,
 body (`wallet_not_available`, `key_signature`, `claim_signature`, ...). Drive's side:
 `app/api/agent-links/[id]/claim/route.ts` and `claimMessage()` in `lib/cloud/agent-links/rules.ts`;
 `test/claim.test.ts` pins the same bytes.
+
+### Connected project
+
+An agent that works for a connected project says so with `--project`. Today the only connected
+project is `aiteam.space`. The owner sees it in Drive before approving.
+
+```bash
+npx -y @untracenetwork/mcp agent claim "<link>" --want files:<folder id>:read_write --project aiteam.space
+```
+
+- `UNTRACE_AGENT_PROJECT=aiteam.space` sets the default, so an agent image can set it once.
+  `--project` wins over the variable.
+- Any other value is refused before a key is made or a request is sent. Drive refuses it too
+  (`400 invalid_project`). The list lives in `CONNECTED_PROJECTS` in `src/agent/claim.ts` and
+  matches Drive's `lib/cloud/agent-links/projects.ts`.
+- The body gets `project`, and the claim message gets one more line, `project: <name>`, after
+  `box:` and before `requested:`:
+
+```
+untrace:agent-link-claim:v1
+link: <id>
+client: <clientId>
+sign: <base64 sign key>
+box: <base64 box key>
+project: aiteam.space
+requested:
+files|folder-q3|read_write|
+```
+
+Without a project, neither the field nor the line is there, so the message is the same as before.
 

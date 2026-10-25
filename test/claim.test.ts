@@ -11,7 +11,17 @@ import { createPublicKey, verify } from "node:crypto"
 import { exportClientSecret } from "@untracenetwork/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { CLAIM_SIGN_PREFIX, checkWants, claimMessage, parseAgentLink, parseWant, scopesFor, type RequestedItem } from "../src/agent/claim"
+import {
+  CLAIM_SIGN_PREFIX,
+  CONNECTED_PROJECTS,
+  checkWants,
+  claimMessage,
+  parseAgentLink,
+  parseProject,
+  parseWant,
+  scopesFor,
+  type RequestedItem,
+} from "../src/agent/claim"
 import { runAgent, type AgentIo } from "../src/agent/command"
 import { agentSigner, fingerprint, keySignMessage } from "../src/agent/keys"
 import { AgentStore } from "../src/agent/store"
@@ -103,6 +113,37 @@ describe("claim message (cross-repo)", () => {
     )
     expect(CLAIM_SIGN_PREFIX).toBe("untrace:agent-link-claim:v1")
   })
+  it("a null or empty project leaves the message unchanged", () => {
+    const a = { linkId: ID, clientId: "utc_AAAAAAAAAAAbbbbbbbbbbb", signPublicKey: "S=", boxPublicKey: "B=", requested: [{ category: "files", resource: "f", mode: "read", name: "f" }] as RequestedItem[] }
+    const golden = ["untrace:agent-link-claim:v1", `link: ${ID}`, "client: utc_AAAAAAAAAAAbbbbbbbbbbb", "sign: S=", "box: B=", "requested:", "files|f|read|"].join("\n")
+    expect(claimMessage(a)).toBe(golden)
+    expect(claimMessage({ ...a, project: null })).toBe(golden)
+    expect(claimMessage({ ...a, project: "" })).toBe(golden)
+  })
+  it("with a project, matches Drive's message: the project line sits after box and before requested", () => {
+    // Drive main 931e5be, lib/cloud/agent-links/rules.ts claimMessage() with project "aiteam.space".
+    const requested: RequestedItem[] = [
+      { category: "files", resource: "folder-q3", mode: "read_write", name: "Q3" },
+      { category: "vault", resource: "entry-gh", mode: "read", name: "GitHub 2FA", kind: "totp" },
+    ]
+    expect(claimMessage({ linkId: ID, clientId: "utc_AAAAAAAAAAAbbbbbbbbbbb", signPublicKey: "S=", boxPublicKey: "B=", requested, project: "aiteam.space" })).toBe(
+      `untrace:agent-link-claim:v1\nlink: ${ID}\nclient: utc_AAAAAAAAAAAbbbbbbbbbbb\nsign: S=\nbox: B=\nproject: aiteam.space\nrequested:\nfiles|folder-q3|read_write|\nvault|entry-gh|read|totp`
+    )
+  })
+})
+
+describe("parseProject", () => {
+  it("mirrors Drive's connected projects list", () => {
+    expect(CONNECTED_PROJECTS).toEqual(["aiteam.space"])
+    expect(parseProject("aiteam.space")).toBe("aiteam.space")
+    expect(parseProject(" aiteam.space ")).toBe("aiteam.space")
+    expect(parseProject(undefined)).toBeUndefined()
+    expect(parseProject("")).toBeUndefined()
+  })
+  it("refuses anything else, naming where it came from", () => {
+    for (const bad of ["AITEAM.SPACE", "aiteam.space.evil.example", "www.aiteam.space", "evil.example", "aiteam.space\nrequested:"]) expect(() => parseProject(bad), bad).toThrow(/not a connected project/)
+    expect(() => parseProject("x", "UNTRACE_AGENT_PROJECT")).toThrow(/^UNTRACE_AGENT_PROJECT/)
+  })
 })
 
 describe("agent claim", () => {
@@ -123,6 +164,7 @@ describe("agent claim", () => {
       signPublicKey: body.signPublicKey as string,
       boxPublicKey: body.boxPublicKey as string,
       requested: body.requested as RequestedItem[],
+      project: body.project as string | undefined,
     })
     const claimOk = edVerify(new TextEncoder().encode(msg), b64(body.claimSignature as string), sign)
     if (!keyOk) return Response.json({ error: "key_signature" }, { status: 400 })
@@ -135,6 +177,7 @@ describe("agent claim", () => {
     err: (l) => errs.push(l),
     now: () => Date.now(),
     store: new AgentStore(dir, []),
+    env: {},
     fetch: (async (url: string, init: RequestInit) => {
       calls.push({ url, init })
       return reply(JSON.parse(String(init.body)))
@@ -250,6 +293,48 @@ describe("agent claim", () => {
     await expect(runAgent(["claim", LINK], io())).rejects.toThrow(/say what the agent needs/)
     await expect(runAgent(["claim", LINK, "--want", "wallet:w"], io())).rejects.toThrow(/wallet/)
     await expect(runAgent(["claim", `https://evil.example/a/${ID}#${SECRET}`, ...WANTS], io())).rejects.toThrow(/this server talks to/)
+    expect(calls).toHaveLength(0)
+    expect(await new AgentStore(dir, []).readRecord()).toBeNull()
+  })
+
+  it("--project is signed into the claim and sent in the body", async () => {
+    expect(await runAgent(["claim", LINK, ...WANTS, "--project", "aiteam.space"], io())).toBe(0)
+    const body = JSON.parse(String(calls[0].init.body)) as Record<string, unknown>
+    expect(body.project).toBe("aiteam.space")
+    expect(lines.join("\n")).toContain("Project:     aiteam.space")
+    // The signature covers the project: the same body without the line in the message fails.
+    const sign = b64(body.signPublicKey as string)
+    const bare = claimMessage({
+      linkId: ID,
+      clientId: body.clientId as string,
+      signPublicKey: body.signPublicKey as string,
+      boxPublicKey: body.boxPublicKey as string,
+      requested: body.requested as RequestedItem[],
+    })
+    expect(edVerify(new TextEncoder().encode(bare), b64(body.claimSignature as string), sign)).toBe(false)
+  })
+
+  it("no project: the body has no project field", async () => {
+    expect(await runAgent(["claim", LINK, ...WANTS], io())).toBe(0)
+    expect(JSON.parse(String(calls[0].init.body))).not.toHaveProperty("project")
+    expect(lines.join("\n")).not.toContain("Project:")
+  })
+
+  it("UNTRACE_AGENT_PROJECT is the default; --project wins; empty env means none", async () => {
+    expect(await runAgent(["claim", LINK, ...WANTS], io({ env: { UNTRACE_AGENT_PROJECT: "aiteam.space" } }))).toBe(0)
+    expect(JSON.parse(String(calls[0].init.body)).project).toBe("aiteam.space")
+    // A bad env value is overridden by a good flag.
+    expect(await runAgent(["claim", LINK, ...WANTS, "--project=aiteam.space"], io({ env: { UNTRACE_AGENT_PROJECT: "nope.example" } }))).toBe(0)
+    expect(JSON.parse(String(calls[1].init.body)).project).toBe("aiteam.space")
+    expect(await runAgent(["claim", LINK, ...WANTS], io({ env: { UNTRACE_AGENT_PROJECT: "" } }))).toBe(0)
+    expect(JSON.parse(String(calls[2].init.body))).not.toHaveProperty("project")
+  })
+
+  it("an unknown project is refused before any network call or key", async () => {
+    await expect(runAgent(["claim", LINK, ...WANTS, "--project", "evil.example"], io())).rejects.toThrow(/--project "evil.example" is not a connected project/)
+    await expect(runAgent(["claim", LINK, ...WANTS, "--project="], io())).rejects.toThrow(/--project needs a value/)
+    await expect(runAgent(["claim", LINK, ...WANTS, "--project"], io())).rejects.toThrow(/--project needs a value/)
+    await expect(runAgent(["claim", LINK, ...WANTS], io({ env: { UNTRACE_AGENT_PROJECT: "evil.example" } }))).rejects.toThrow(/UNTRACE_AGENT_PROJECT/)
     expect(calls).toHaveLength(0)
     expect(await new AgentStore(dir, []).readRecord()).toBeNull()
   })
