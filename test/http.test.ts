@@ -213,7 +213,7 @@ describe("MCP over HTTP", () => {
     expect(r0.status).toBe(200)
     expect((await r0.json()).result.serverInfo.name).toBe("untrace-mcp")
     const r1 = await (await rpc(t.access_token, { jsonrpc: "2.0", id: 2, method: "tools/list" })).json()
-    expect(r1.result.tools).toHaveLength(21)
+    expect(r1.result.tools).toHaveLength(26)
     const r2 = await (await rpc(t.access_token, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "untrace_whoami", arguments: {} } })).json()
     expect(JSON.parse(r2.result.content[0].text).clientId).toBe(KEY)
   })

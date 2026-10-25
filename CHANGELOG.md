@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Secrets v0: `untrace_secret_set`, `untrace_secret_get`, `untrace_secret_list`,
+  `untrace_secret_share`, `untrace_secret_unshare`. A secret is a small encrypted file in a reserved
+  `.untrace/secrets/<name>` folder of the owner's Drive, made and opened by the SDK like any file,
+  with per-secret key entries. Set never returns the value, list returns names only, and a value
+  this server has seen is redacted from every other result, error and log line.
+- Secrets: own vault first. `set` writes only into this key's own `/.untrace/secrets/<name>`;
+  `get`, `share` and `unshare` read only the own vault, and `list` adds shared secrets only with
+  `includeShared: true`. A shared secret is used only with `shared: true` (or its `id`) and is marked
+  `shared: true`; Untrace refuses a write into another owner's folder and a share with another
+  account's key, both mapped to a plain refusal. `untrace_secret_unshare` needs `confirm: true`.
+
 ## 2.0.0 (unreleased)
 
 - `untrace-mcp agent claim <link> --want ...`: claim a one-time agent link from Drive (Settings >

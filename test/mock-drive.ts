@@ -51,6 +51,8 @@ export const SECRET = exportClientSecret(RAW_SECRET)
 export const SECRET_BODY = SECRET.slice(CLIENT_SECRET_PREFIX.length)
 /** Another developer key of the same account (for attach tests). */
 export const OTHER_CLIENT = "utc_9Ab3cDe4FgH5jKm6NpQ7rS"
+/** A developer key of ANOTHER account. Drive refuses to attach it (foreign_key_attach -> 404). */
+export const FOREIGN_CLIENT = "utc_FrGn222222222222222222"
 /** A top-level folder the test key is admin of, made by the mock on first use. */
 export const FOLDER_ID = "f0f0f0f0-0000-4000-8000-000000000001"
 
@@ -89,6 +91,8 @@ export interface StoredFolder {
   entries: Entry[]
   trashed: boolean
   createdAt: string
+  /** Owned by another account (reached through an accepted share), as Drive's owner_wallet. */
+  foreign?: boolean
 }
 
 export interface StoredFile {
@@ -186,7 +190,7 @@ export function createMockDrive(opts: MockOptions = {}) {
   /** Folder keys the mock made (tests compare them with what the client opened). */
   const folderKeys = new Map<string, Uint8Array>()
 
-  async function makeFolder(f: { folderId?: string; name: string; parentId: string | null; mine: boolean; role?: Role | "none" }): Promise<StoredFolder> {
+  async function makeFolder(f: { folderId?: string; name: string; parentId: string | null; mine: boolean; role?: Role | "none"; foreign?: boolean }): Promise<StoredFolder> {
     const folderKey = randomBytes(32)
     const { publicKey } = await deriveFolderBoxKeys(folderKey)
     const me = await deriveClientKeys(RAW_SECRET)
@@ -204,6 +208,7 @@ export function createMockDrive(opts: MockOptions = {}) {
         : [],
       trashed: false,
       createdAt: now(),
+      ...(f.foreign ? { foreign: true } : {}),
     }
     folders.set(folder.folderId, folder)
     folderKeys.set(folder.folderId, folderKey)
@@ -297,6 +302,8 @@ export function createMockDrive(opts: MockOptions = {}) {
       if (b.keyType !== "passkey" && b.keyType !== "client") return err(400, "invalid_request", "invalid keyType")
       if (!["admin", "editor", "viewer", "none"].includes(String(b.role))) return err(400, "invalid_request", "invalid role")
       if (b.role !== "none" && (typeof b.sealedKey !== "string" || !SEALED_RE.test(b.sealedKey))) return err(400, "invalid_request", "invalid sealedKey")
+      // Drive attaches only keys held by the caller's own account (entries.ts addEntry).
+      if (b.role !== "none" && b.keyId === FOREIGN_CLIENT) return notFound()
       const e: Entry = {
         entryId: crypto.randomUUID(),
         keyType: b.keyType,
@@ -537,6 +544,8 @@ export function createMockDrive(opts: MockOptions = {}) {
       if (!folderId) return denied()
       if (!UUID_RE.test(folderId)) return err(400, "invalid_request", "invalid X-Untrace-Folder-Id")
       if (!canCreateIn(resolveFolder(folderId))) return denied()
+      // Drive uploads only into a folder of the key's own owner (folder-access.ts canCreateInFolder).
+      if (chainOf(folderId)?.[0]?.foreign) return denied()
       const folderSealedKey = headers["x-untrace-folder-sealed-key"] ?? ""
       if (!SEALED_RE.test(folderSealedKey)) return err(400, "invalid_request", "invalid X-Untrace-Folder-Sealed-Key")
       if (opts.noShareKey) return err(409, "conflict", "no sharing key")
@@ -643,9 +652,9 @@ export function createMockDrive(opts: MockOptions = {}) {
       files.set(f.fileId, { role: "viewer", createdAt: now(), trashed: false, ...f })
     },
     /** A folder made by the mock. `mine`: the test key gets an entry with `role` (default admin). */
-    async addFolder(f: { name: string; parentId?: string | null; mine?: boolean; role?: Role | "none" }) {
+    async addFolder(f: { name: string; parentId?: string | null; mine?: boolean; role?: Role | "none"; foreign?: boolean }) {
       await seed()
-      return makeFolder({ name: f.name, parentId: f.parentId ?? null, mine: f.mine ?? false, role: f.role })
+      return makeFolder({ name: f.name, parentId: f.parentId ?? null, mine: f.mine ?? false, role: f.role, foreign: f.foreign })
     },
     /** Offer a resource to the account that owns the test key, as another user would. */
     offerToMe(resourceType: "folder" | "file", resourceId: string, key: Uint8Array, role: GrantRole = "editor") {

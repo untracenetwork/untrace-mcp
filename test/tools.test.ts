@@ -32,7 +32,7 @@ describe("tool registry", () => {
   it("lists exactly the v2 tools, each with a description, an input schema and annotations", async () => {
     const { tools } = await h.mcp.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
-    expect(tools).toHaveLength(21)
+    expect(tools).toHaveLength(26)
     for (const t of tools) {
       expect(t.description && t.description.length).toBeGreaterThan(40)
       expect(t.inputSchema.type).toBe("object")
@@ -415,6 +415,23 @@ describe("key entries", () => {
     const r = await h.call("untrace_remove_key", { resourceType: "folder", resourceId: FOLDER_ID, entryId: ENTRY_ID, confirm: true })
     expect(r.json).toEqual({ resourceType: "folder", resourceId: FOLDER_ID, entryId: ENTRY_ID, removed: true })
     expect(h.client.keys.remove).toHaveBeenCalledWith({ type: "folder", id: FOLDER_ID }, ENTRY_ID)
+  })
+
+  it("secret unshare needs confirm: true, like remove_key, and calls nothing without it", async () => {
+    const { tools } = await h.mcp.listTools()
+    const unshare = tools.find((t) => t.name === "untrace_secret_unshare")!
+    expect(unshare.inputSchema.required).toContain("confirm")
+    expect(unshare.description).toMatch(/Pass confirm: true only after the user has agreed/)
+    // Without confirm at all, the input schema refuses it.
+    const missing = await h.call("untrace_secret_unshare", { name: "openai", clientId: KEY2 })
+    expect(missing.isError).toBe(true)
+    expect(missing.text).toMatch(/confirm/)
+    expect((await h.call("untrace_secret_unshare", { name: "openai", clientId: KEY2, confirm: false })).text).toBe(
+      "refused: Refused: unsharing a secret cuts that key's access. Ask the user, then call again with confirm: true."
+    )
+    expect(h.client.folders.list).not.toHaveBeenCalled()
+    expect(h.client.keys.list).not.toHaveBeenCalled()
+    expect(h.client.keys.remove).not.toHaveBeenCalled()
   })
 })
 
