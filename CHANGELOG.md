@@ -2,6 +2,9 @@
 
 ## 2.0.0 (unreleased)
 
+- `untrace-mcp agent claim <link> --want ...`: claim a one-time agent link from Drive (Settings >
+  Developer > Give your agent access). Public keys and signatures only; the link works once.
+
 Built on `@untracenetwork/sdk` ^2.0.0 (Drive API v1: OAuth client credentials, files encrypted on
 the developer's machine).
 

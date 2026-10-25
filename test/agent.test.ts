@@ -118,6 +118,9 @@ describe("key helpers", () => {
       ttl: "5",
       force: true,
       offline: true,
+      wants: [],
+      wait: false,
+      positional: [],
     })
     expect(() => parseFlags(["--label"])).toThrow(/needs a value/)
     expect(() => parseFlags(["--nope"])).toThrow(/unknown option/)
