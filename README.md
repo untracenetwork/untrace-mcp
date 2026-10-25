@@ -84,6 +84,20 @@ fingerprint and approve. `untrace-mcp agent status` shows whether Drive has appr
 `UNTRACE_CLIENT_ID` and `UNTRACE_CLIENT_SECRET` unset, `untrace-mcp` then uses this key. Details:
 `docs/AGENT-PAIRING.md` in the package repository.
 
+### Or: claim a one-time agent link
+
+When the owner creates a link in Drive (**Settings > Developer > Give your agent access**), the
+agent claims it and says what it needs:
+
+```bash
+npx -y @untracenetwork/mcp agent claim "https://drive.untrace.network/a/<id>#<secret>" \
+  --want files:<folder id>:read_write --want vault:<entry id>=OPENAI_API_KEY --wait
+```
+
+The key is made on this machine (or the one from `agent init` is reused). Drive gets public keys
+and signatures only. The owner compares the fingerprint, can narrow what is asked for, and
+approves. The link works once and expires after 15 minutes.
+
 ## 2. Environment variables
 
 | Variable | Mode | Meaning |

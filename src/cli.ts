@@ -31,7 +31,7 @@ const HELP = [
   "  untrace-mcp                        serve over stdio (default)",
   "  untrace-mcp http                   serve Streamable HTTP with OAuth at <public url>/mcp",
   "  untrace-mcp new-connector-secret   print a new random UNTRACE_MCP_OAUTH_CLIENT_SECRET",
-  "  untrace-mcp agent init|code|status  create a key on THIS machine and pair it (agent --help)",
+  "  untrace-mcp agent init|code|claim|status  create a key on THIS machine and pair it (agent --help)",
   "  untrace-mcp --version | --help",
   "",
   "Environment (all modes):",

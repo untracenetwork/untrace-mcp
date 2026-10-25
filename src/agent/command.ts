@@ -1,6 +1,9 @@
 /**
- * `untrace-mcp agent <init|code|status>`: create this agent's developer key on THIS machine and
+ * `untrace-mcp agent <init|code|claim|status>`: create this agent's developer key on THIS machine and
  * pair it with an Untrace Drive account. docs/AGENT-PAIRING.md.
+ *
+ *   agent claim <link> --want <category:id[:mode]> ... [--label <name>] [--runs-on <text>] [--wait]
+ *      claim a one-time agent link from Drive (Settings > Developer > Give your agent access)
  *
  *   agent init [--label <name>] [--scopes download,upload] [--ttl <minutes>] [--force]
  *   agent code [--scopes ...] [--ttl <minutes>]     a fresh pairing code for the same key
@@ -15,6 +18,7 @@ import { hostname } from "node:os"
 
 import { UntraceClient } from "@untracenetwork/sdk"
 
+import { claimAgentLink, parseWant, type RequestedItem } from "./claim"
 import { agentSigner, fingerprint, newClientId, newSecret, randomNonce } from "./keys"
 import { encodePairingCode, LABEL_MAX, PAIRING_SCOPES, PAIRING_TTL_SECONDS, parseScopeList, validLabel, type PairingScope } from "./pairing"
 import { AgentStore, type AgentRecord } from "./store"
@@ -24,6 +28,10 @@ export interface AgentIo {
   err(line: string): void
   now(): number
   store: AgentStore
+  /** Drive origin for `agent claim` (default UNTRACE_BASE_URL, else https://drive.untrace.network). */
+  baseUrl?: string
+  fetch?: typeof fetch
+  sleep?(ms: number): Promise<void>
   /** Probe whether Drive accepts this key. Injected in tests. */
   probe?(clientId: string, secret: string): Promise<"paired" | "pending" | "unreachable">
 }
@@ -35,6 +43,11 @@ export const AGENT_HELP = [
   "      create the key here, store it in the OS keychain (or a 0600 file), print a pairing code",
   "  untrace-mcp agent code [--scopes ...] [--ttl <minutes>]",
   "      print a fresh pairing code for the existing key",
+  "  untrace-mcp agent claim <link> --want <category:id[:mode][=Name]> ... [--label <name>] [--runs-on <text>] [--wait]",
+  "      claim a one-time agent link the owner made in Drive (Settings > Developer > Give your agent access)",
+  "      e.g. --want files:<folder id>:read_write --want vault:<entry id>=OPENAI_API_KEY --want mail:agent@acme.com",
+  "      categories: files, vault (add :totp for a 2FA code), mail. Modes: read (default), write, read_write.",
+  "      Uses this machine's agent key, or creates one. --wait waits for the owner to approve.",
   "  untrace-mcp agent status [--offline]",
   "      show the fingerprint, where the key is stored, and whether Drive has approved it",
   "",
@@ -49,10 +62,14 @@ interface Flags {
   ttl?: string
   force: boolean
   offline: boolean
+  wants: RequestedItem[]
+  runsOn?: string
+  wait: boolean
+  positional: string[]
 }
 
 export function parseFlags(args: string[]): Flags {
-  const f: Flags = { force: false, offline: false }
+  const f: Flags = { force: false, offline: false, wants: [], wait: false, positional: [] }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     const [name, inline] = a.startsWith("--") && a.includes("=") ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] : [a, undefined]
@@ -66,6 +83,10 @@ export function parseFlags(args: string[]): Flags {
     else if (name === "--ttl") f.ttl = value()
     else if (name === "--force") f.force = true
     else if (name === "--offline") f.offline = true
+    else if (name === "--want") f.wants.push(parseWant(value()))
+    else if (name === "--runs-on") f.runsOn = value()
+    else if (name === "--wait") f.wait = true
+    else if (!a.startsWith("-")) f.positional.push(a)
     else throw new Error(`unknown option ${a}. See untrace-mcp agent --help.`)
   }
   return f
@@ -183,9 +204,17 @@ export async function runAgent(args: string[], io: AgentIo): Promise<number> {
     return sub === undefined ? 1 : 0
   }
   const f = parseFlags(rest)
+  if (sub !== "claim" && f.positional.length) throw new Error(`unexpected argument ${f.positional[0]}. See untrace-mcp agent --help.`)
   if (sub === "init") return init(io, f)
   if (sub === "code") return code(io, f)
   if (sub === "status") return status(io, f)
+  if (sub === "claim") {
+    if (f.positional.length !== 1) throw new Error("usage: untrace-mcp agent claim <link> --want <category:id[:mode]>. See agent --help.")
+    return claimAgentLink(
+      { ...io, probe: io.probe ?? probeDrive },
+      { link: f.positional[0], wants: f.wants, label: f.label, runsOn: f.runsOn, wait: f.wait, baseUrl: io.baseUrl ?? process.env.UNTRACE_BASE_URL }
+    )
+  }
   throw new Error(`unknown agent command ${sub}. See untrace-mcp agent --help.`)
 }
 
