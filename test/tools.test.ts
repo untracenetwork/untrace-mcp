@@ -32,7 +32,7 @@ describe("tool registry", () => {
   it("lists exactly the v2 tools, each with a description, an input schema and annotations", async () => {
     const { tools } = await h.mcp.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
-    expect(tools).toHaveLength(26)
+    expect(tools).toHaveLength(27)
     for (const t of tools) {
       expect(t.description && t.description.length).toBeGreaterThan(40)
       expect(t.inputSchema.type).toBe("object")
@@ -54,7 +54,8 @@ describe("tool registry", () => {
     expect(by.untrace_delete_file!.destructiveHint).toBe(true)
     expect(by.untrace_remove_key!.destructiveHint).toBe(true)
     expect(by.untrace_trash_folder!.destructiveHint).toBe(true)
-    for (const n of ["untrace_list", "untrace_get_file", "untrace_get_folder", "untrace_list_keys", "untrace_list_incoming_shares", "untrace_whoami", "untrace_setup_guide"]) expect(by[n]!.readOnlyHint).toBe(true)
+    for (const n of ["untrace_list", "untrace_get_file", "untrace_get_folder", "untrace_list_keys", "untrace_list_incoming_shares", "untrace_whoami", "untrace_setup_guide", "untrace_generate_link"]) expect(by[n]!.readOnlyHint).toBe(true)
+    expect(by.untrace_generate_link!.openWorldHint).toBe(false)
   })
 
   it("no tool or description is still marked planned, and no tool offers a device key", async () => {

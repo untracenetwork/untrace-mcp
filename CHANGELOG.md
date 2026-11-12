@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `untrace_generate_link`: turns an HTML document (`html`, or a local `.html`/`.htm` file at
+  `path`) into a link that opens it in Drive's editor at `/generate`. The document travels in the
+  URL fragment (`#doc=` deflate-raw + base64url, or `#html=`), so no server receives the draft. No
+  request, no key needed, nothing logged. At most 2 MiB of HTML and 1,500,000 payload characters.
+  See docs/GENERATE.md.
 - Connected project: `agent claim --project aiteam.space` (or `UNTRACE_AGENT_PROJECT`, the flag
   wins) names the project the agent works for. It is sent as `project` and signed into the claim as
   a `project:` line, the same as Drive. Only `aiteam.space` is accepted; anything else is refused
