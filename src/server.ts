@@ -38,6 +38,7 @@ import {
 import { z } from "zod"
 
 import { ToolRefusal, toolError } from "./errors"
+import { GENERATE_NEXT, MAX_GENERATE_HTML_BYTES, buildGenerateLink, decodeUtf8File, driveOrigin, type GenerateFormat } from "./generate"
 import { FRAMEWORKS, setupGuide } from "./guide"
 import { isSymlink, resolveInsideRoot, resolveRoot } from "./paths"
 import { configuredSecrets, redact, redactExcept, rememberSecretValue } from "./redact"
@@ -126,6 +127,7 @@ export const TOOL_NAMES = [
   "untrace_remove_key",
   "untrace_whoami",
   "untrace_setup_guide",
+  "untrace_generate_link",
   "untrace_secret_set",
   "untrace_secret_get",
   "untrace_secret_list",
@@ -211,6 +213,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         "Sharing with a person: untrace_share offers a file or folder to their Untrace username; they accept by attaching their OWN key. Nobody can attach a key in someone else's name. The owner can never be removed or demoted.",
         "Credentials are set in this server's environment. Never ask the user for the client secret in chat. Deleting a file, trashing a folder or removing a key needs confirm: true after the user agrees.",
         "Developers adding Untrace to their own app: call untrace_setup_guide once the stack is known.",
+        "To hand the user a document to edit in Drive (a plan, a report, a letter), write it as HTML and call untrace_generate_link; give them the link and do not post it anywhere public.",
         "Secrets (API keys, tokens, passwords): when the user gives you one, store it with untrace_secret_set instead of keeping it in the chat, and read it back with untrace_secret_get only when a task needs it. Never print a secret value in the chat unless the user explicitly asks to see it.",
       ].join(" "),
     }
@@ -641,6 +644,41 @@ server.registerTool(
     },
     async ({ framework, includeReference }: { framework: (typeof FRAMEWORKS)[number]; includeReference?: boolean }) => ({
       content: [{ type: "text" as const, text: setupGuide(framework, includeReference ?? true) }],
+    })
+  )
+
+  server.registerTool(
+    "untrace_generate_link",
+    {
+      title: "Open an HTML document in Drive's editor",
+      description: `Turn an HTML document into a link that opens it in Untrace Drive's editor (/generate), where the person fixes the text, then splits and uploads it as a PDF. The document travels only in the part of the link after #, which browsers never send to a server, so the draft does not reach Untrace until the person uploads it. Give html (the document) or path (a local .html or .htm file inside the allowed folder). Write a self-contained document: headings, paragraphs, lists and tables; inline styles are fine; images only as data: URIs (remote images, fonts and scripts are removed by the editor). At most 2 MB of HTML. format doc (default) compresses it; html does not and fits far less. Works offline and needs no key. The link holds the whole document: give it to the person to open, never post it publicly.`,
+      inputSchema: {
+        html: z.string().min(1).max(4 * MAX_GENERATE_HTML_BYTES).optional().describe("The HTML document, when no path is given."),
+        path: z.string().min(1).optional().describe("A local .html or .htm file, relative to the allowed folder (UNTRACE_MCP_ROOT). Not available on a remote server."),
+        format: z.enum(["doc", "html"]).optional().default("doc").describe("doc (default): compressed, fits far more. html: plain base64url, only for small documents."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    run(async ({ html, path, format }: { html?: string; path?: string; format?: GenerateFormat }) => {
+      if ((html == null) === (path == null)) throw new ToolRefusal("Refused: give exactly one of html or path.")
+      let doc: string
+      if (path != null) {
+        const abs = await resolveInsideRoot(await getRoot(), path)
+        if (!/\.html?$/i.test(abs)) throw new ToolRefusal(`Refused: ${path} is not an .html or .htm file.`)
+        const info = await stat(abs)
+        if (!info.isFile()) throw new ToolRefusal(`Refused: ${path} is not a regular file.`)
+        if (info.size > MAX_GENERATE_HTML_BYTES) {
+          throw new ToolRefusal(`Refused: ${path} is ${info.size} bytes. Drive opens at most ${MAX_GENERATE_HTML_BYTES} bytes (2 MB) of HTML.`)
+        }
+        doc = decodeUtf8File(new Uint8Array(await readFile(abs)), path)
+      } else doc = html!
+      // Local only: never touches the Drive client, so it works without a key and makes no request.
+      const link = buildGenerateLink(doc, { format: format ?? "doc", origin: driveOrigin() })
+      const result = { url: link.url, format: link.format, htmlBytes: link.htmlBytes, urlChars: link.urlChars }
+      const text = JSON.stringify(result, null, 2)
+      // Redaction must never cut into the link: if it would change anything, refuse instead.
+      if (redact(text, configuredSecrets()) !== text) throw new ToolRefusal("Refused: the link could not be returned safely. Change the document slightly and try again.")
+      return { content: [{ type: "text" as const, text }, { type: "text" as const, text: GENERATE_NEXT }] }
     })
   )
 

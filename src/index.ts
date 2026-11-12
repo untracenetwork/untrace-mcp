@@ -7,4 +7,5 @@ export { createHttpApp, listen, MCP_PATH, DEFAULT_REDIRECT_URIS, ACCESS_TOKEN_TT
 export { redact } from "./redact"
 export { describeError, ToolRefusal } from "./errors"
 export { setupGuide, FRAMEWORKS, type Framework } from "./guide"
+export { buildGenerateLink, MAX_GENERATE_HTML_BYTES, MAX_GENERATE_PAYLOAD_CHARS, type GenerateFormat, type GenerateLink } from "./generate"
 export { VERSION } from "./version"

@@ -121,8 +121,8 @@ in Drive. Other values are refused. See `docs/AGENT-PAIRING.md`.
 The client secret is read from the environment only. No tool accepts a secret as an argument, and
 secrets are redacted from every tool result, error and log line. Never paste one into a chat.
 
-The stdio server starts without a key, so `untrace_setup_guide` works anyway; file tools then
-answer with setup help. Node.js 20 or newer is required.
+The stdio server starts without a key, so `untrace_setup_guide` and `untrace_generate_link` work
+anyway; file tools then answer with setup help. Node.js 20 or newer is required.
 
 ## 3. Local clients (stdio)
 
@@ -289,6 +289,7 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8787/mcp wit
 | `untrace_remove_key` | Remove an entry. Requires `confirm: true`. Never the owner | scope `manage-sharing`, admin |
 | `untrace_whoami` | This key's client id, Drive, scopes and public key. Never the secret | nothing |
 | `untrace_setup_guide` | Step-by-step instructions, with code, for adding the Drive SDK to a Next.js, Node.js, React or Vue app. Works offline, no key needed | nothing |
+| `untrace_generate_link` | Turn an HTML document (`html`, or a local `.html` file at `path`) into a link that opens it in Drive's editor. Local only: no request, no key needed. See [Generate a document in Drive](#generate-a-document-in-drive) | nothing |
 | `untrace_secret_set` | Keep a secret (an API key, token or password) under a `name` in this key's own vault. Encrypted on this machine. Setting it again adds a new version. `shared: true` (or `id`) writes a new version into a secret shared with this key, same owner only. Never sends the value back | scope `upload` |
 | `untrace_secret_get` | Read the newest value of a secret in this key's own vault; `shared: true` (or `id`) for one shared with it | scope `download` |
 | `untrace_secret_list` | This key's own secrets, by name, with version and date; `includeShared: true` adds the shared ones, marked `shared`. Never the values | any role |
@@ -372,6 +373,26 @@ Errors come back as MCP tool errors that start with a short code and say what to
 
 Uploads count against the **owner's** plan. `untrace_upload_file` returns
 `metering: { billedTo: "owner", meteredBytes, usageBytes, quotaBytes }` (`quotaBytes` `-1` means unlimited).
+
+## Generate a document in Drive
+
+Ask your agent for a document (a business plan, a report, a letter) and edit it in Drive before it
+is saved. The agent writes the document as HTML and calls `untrace_generate_link`. You open the
+link, fix the text in Drive's editor, then press Split & Upload to save it as a PDF in your Drive.
+
+- **The draft stays out of servers.** The document is inside the link, after the `#`. Browsers
+  never send that part to a server, so Untrace does not receive the draft until you upload it.
+- **Local only.** The tool makes no request and needs no developer key.
+- **Not logged.** The document and the link are never written to a log.
+- **Self-contained HTML.** Headings, paragraphs, lists and tables. Inline styles are fine. Images
+  only as `data:` URIs: the editor removes remote images, fonts and scripts.
+- **Size.** At most 2 MB of HTML. The default format, `doc`, compresses it; `html` does not and
+  fits far less.
+- **The link is the document.** Open it yourself; do not post it anywhere public.
+
+Try it: "Write a one-page business plan for my bakery and open it in Untrace Drive."
+
+Wire format and limits: [docs/GENERATE.md](docs/GENERATE.md).
 
 ## Set up the Drive SDK in your app
 
