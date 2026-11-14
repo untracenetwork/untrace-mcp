@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `untrace_generate_link` templates: `template` (`mutual-nda`, `invoice`, `proposal-quote`,
+  `letter`, `meeting-minutes`) starts from the same templates as Drive's editor, byte for byte (the
+  NDA is Common Paper Mutual NDA 1.0, CC BY 4.0, credit line kept). `fields` fills them: each value
+  replaces every `<mark>[Name]</mark>` of its field as escaped plain text; an empty value leaves the
+  field highlighted; unknown names are refused; at most 200 fields of 2,000 characters. The answer
+  adds `template`, `fieldsFilled` and `fieldsLeft`. Give exactly one of `html`, `path` or
+  `template`. A refusal never repeats a value.
 - `untrace_generate_link`: turns an HTML document (`html`, or a local `.html`/`.htm` file at
   `path`) into a link that opens it in Drive's editor at `/generate`. The document travels in the
   URL fragment (`#doc=` deflate-raw + base64url, or `#html=`), so no server receives the draft. No

@@ -289,7 +289,7 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8787/mcp wit
 | `untrace_remove_key` | Remove an entry. Requires `confirm: true`. Never the owner | scope `manage-sharing`, admin |
 | `untrace_whoami` | This key's client id, Drive, scopes and public key. Never the secret | nothing |
 | `untrace_setup_guide` | Step-by-step instructions, with code, for adding the Drive SDK to a Next.js, Node.js, React or Vue app. Works offline, no key needed | nothing |
-| `untrace_generate_link` | Turn an HTML document (`html`, or a local `.html` file at `path`) into a link that opens it in Drive's editor. Local only: no request, no key needed. See [Generate a document in Drive](#generate-a-document-in-drive) | nothing |
+| `untrace_generate_link` | Turn an HTML document (`html`, a local `.html` file at `path`, or one of Drive's templates at `template`, with its `fields` filled) into a link that opens it in Drive's editor. Local only: no request, no key needed. See [Generate a document in Drive](#generate-a-document-in-drive) | nothing |
 | `untrace_secret_set` | Keep a secret (an API key, token or password) under a `name` in this key's own vault. Encrypted on this machine. Setting it again adds a new version. `shared: true` (or `id`) writes a new version into a secret shared with this key, same owner only. Never sends the value back | scope `upload` |
 | `untrace_secret_get` | Read the newest value of a secret in this key's own vault; `shared: true` (or `id`) for one shared with it | scope `download` |
 | `untrace_secret_list` | This key's own secrets, by name, with version and date; `includeShared: true` adds the shared ones, marked `shared`. Never the values | any role |
@@ -388,11 +388,15 @@ link, fix the text in Drive's editor, then press Split & Upload to save it as a 
   only as `data:` URIs: the editor removes remote images, fonts and scripts.
 - **Size.** At most 2 MB of HTML. The default format, `doc`, compresses it; `html` does not and
   fits far less.
+- **Templates.** Start from the same templates as Drive's editor: `mutual-nda`, `invoice`,
+  `proposal-quote`, `letter`, `meeting-minutes`. `fields` fills the highlighted values by name;
+  the answer lists what is still left in `fieldsLeft`.
 - **The link is the document.** Open it yourself; do not post it anywhere public.
 
-Try it: "Write a one-page business plan for my bakery and open it in Untrace Drive."
+Try it: "Write a one-page business plan for my bakery and open it in Untrace Drive." Or: "Make a
+mutual NDA between my company and Acme Ltd and open it in Untrace Drive."
 
-Wire format and limits: [docs/GENERATE.md](docs/GENERATE.md).
+Templates, wire format and limits: [docs/GENERATE.md](docs/GENERATE.md).
 
 ## Set up the Drive SDK in your app
 

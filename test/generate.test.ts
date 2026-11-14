@@ -238,11 +238,11 @@ describe("untrace_generate_link: limits", () => {
 })
 
 describe("untrace_generate_link: input", () => {
-  it("needs exactly one of html or path", async () => {
+  it("needs exactly one of html, path or template", async () => {
     h = await harness()
     await h.write("a.html", ASCII)
-    expect((await h.call("untrace_generate_link", {})).text).toMatch(/^refused: Refused: give exactly one of html or path/)
-    expect((await h.call("untrace_generate_link", { html: ASCII, path: "a.html" })).text).toMatch(/^refused: Refused: give exactly one of html or path/)
+    expect((await h.call("untrace_generate_link", {})).text).toMatch(/^refused: Refused: give exactly one of html, path or template/)
+    expect((await h.call("untrace_generate_link", { html: ASCII, path: "a.html" })).text).toMatch(/^refused: Refused: give exactly one of html, path or template/)
   })
 
   it("rejects an unknown format", async () => {

@@ -17,12 +17,14 @@ save it as a PDF in their Drive. Nothing is uploaded before that.
 
 ## Tool
 
-Input, exactly one of `html` or `path`:
+Input, exactly one of `html`, `path` or `template`:
 
 | Field | Meaning |
 |---|---|
 | `html` | The HTML document |
 | `path` | A local `.html` or `.htm` file (UTF-8), inside `UNTRACE_MCP_ROOT`, with the same rules as uploads. Off on a remote server |
+| `template` | One of Drive's templates. See [Templates](#templates) |
+| `fields` | Only with `template`: field name to value. See [Templates](#templates) |
 | `format` | `doc` (default, compressed) or `html` (not compressed, for small documents) |
 
 Output:
@@ -37,6 +39,77 @@ Output:
 ```
 
 `htmlBytes` is the size of the HTML in UTF-8 bytes. `urlChars` is the length of the whole link.
+With `template`, the output also has `template`, `fieldsFilled` and `fieldsLeft`.
+
+## Templates
+
+`template` starts from the same templates as Untrace Drive's editor, byte for byte.
+
+| `template` | Document |
+|---|---|
+| `mutual-nda` | Common Paper Mutual NDA 1.0 (CC BY 4.0): cover page, standard terms and signature table. The clauses are word for word and the credit line stays |
+| `invoice` | Seller and client details, line items with subtotal, tax and total, and payment details |
+| `proposal-quote` | Summary, scope, deliverables, timeline, price table and an acceptance block |
+| `letter` | A business letter with sender, recipient, subject, body and closing |
+| `meeting-minutes` | Details, attendees, agenda, discussion, decisions and an action items table |
+
+A field is a highlighted value in square brackets, written `<mark>[Field name]</mark>` in the
+HTML. Its name is the text inside the brackets, for example `Party 1 company`.
+
+- `fields` maps a field name to its value. The value replaces every copy of that field, as plain
+  text (HTML-escaped, so `<script>` arrives as text) and no longer highlighted.
+- An empty value leaves the field highlighted.
+- A name that is not in the template is refused. The refusal names the field, never a value.
+- At most 200 fields per call and 2,000 characters per value.
+- `fieldsFilled` counts the fields given a value. `fieldsLeft` lists the fields still highlighted,
+  in document order, each once.
+
+Call once with `template` alone: the link opens the blank template and `fieldsLeft` lists every
+field. Then call again with `fields`.
+
+```json
+{
+  "template": "letter",
+  "fields": {
+    "Your name or business name": "Northwind Studio",
+    "Recipient name": "Maya Haddad",
+    "Subject": "Project kickoff",
+    "Date": "14 November 2026"
+  }
+}
+```
+
+Output:
+
+```json
+{
+  "url": "https://drive.untrace.network/generate#doc=...",
+  "format": "doc",
+  "htmlBytes": 783,
+  "urlChars": 479,
+  "template": "letter",
+  "fieldsFilled": 4,
+  "fieldsLeft": [
+    "Street address",
+    "City, postal code, country",
+    "Email",
+    "Phone",
+    "Recipient title",
+    "Recipient company",
+    "Recipient street address",
+    "Recipient city, postal code, country",
+    "First paragraph: why you are writing",
+    "Second paragraph: the details",
+    "Third paragraph: what you ask for or the next step",
+    "Closing, such as Kind regards",
+    "Your name",
+    "Your title"
+  ]
+}
+```
+
+`Recipient name` appears twice in the letter (the address block and "Dear ..."); both copies are
+filled.
 
 ## Wire format
 
