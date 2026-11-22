@@ -40,6 +40,7 @@ import { z } from "zod"
 import { ToolRefusal, toolError } from "./errors"
 import { GENERATE_DESCRIPTION, GENERATE_NEXT, MAX_GENERATE_HTML_BYTES, buildGenerateLink, decodeUtf8File, driveOrigin, type GenerateFormat } from "./generate"
 import { MAX_FIELDS, MAX_FIELD_VALUE_CHARS, TEMPLATE_IDS, fillTemplate, templateById, type TemplateId } from "./templates"
+import { MAX_SAVE_HTML_BYTES, PAPER_IDS, SAVE_DESCRIPTION, SAVE_NEXT, buildDocumentPdf, driveFileUrl, type PaperId } from "./save-document"
 import { FRAMEWORKS, setupGuide } from "./guide"
 import { isSymlink, resolveInsideRoot, resolveRoot } from "./paths"
 import { configuredSecrets, redact, redactExcept, rememberSecretValue } from "./redact"
@@ -129,6 +130,7 @@ export const TOOL_NAMES = [
   "untrace_whoami",
   "untrace_setup_guide",
   "untrace_generate_link",
+  "untrace_save_document",
   "untrace_secret_set",
   "untrace_secret_get",
   "untrace_secret_list",
@@ -215,6 +217,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         "Credentials are set in this server's environment. Never ask the user for the client secret in chat. Deleting a file, trashing a folder or removing a key needs confirm: true after the user agrees.",
         "Developers adding Untrace to their own app: call untrace_setup_guide once the stack is known.",
         "To hand the user a document to edit in Drive (a plan, a report, a letter), write it as HTML and call untrace_generate_link, or pass template (mutual-nda, invoice, proposal-quote, letter, meeting-minutes) and its fields; give them the link and do not post it anywhere public.",
+        "To save a finished document straight to the user's Drive as a PDF, write it as HTML and call untrace_save_document: this server makes the PDF. At most 256 KB of HTML and 10 pages; split longer documents into parts.",
         "Secrets (API keys, tokens, passwords): when the user gives you one, store it with untrace_secret_set instead of keeping it in the chat, and read it back with untrace_secret_get only when a task needs it. Never print a secret value in the chat unless the user explicitly asks to see it.",
       ].join(" "),
     }
@@ -668,26 +671,7 @@ server.registerTool(
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     run(async ({ html, path, format, template, fields }: { html?: string; path?: string; format?: GenerateFormat; template?: TemplateId; fields?: Record<string, string> }) => {
-      if ([html, path, template].filter((v) => v != null).length !== 1) throw new ToolRefusal("Refused: give exactly one of html, path or template.")
-      if (fields != null && template == null) throw new ToolRefusal("Refused: fields works only with template.")
-      let doc: string
-      let filled: { template: TemplateId; fieldsFilled: number; fieldsLeft: string[] } | null = null
-      if (template != null) {
-        const t = templateById(template)
-        if (!t) throw new ToolRefusal(`Refused: template is one of ${TEMPLATE_IDS.join(", ")}.`)
-        const f = fillTemplate(t, fields ?? {})
-        doc = f.html
-        filled = { template: t.id, fieldsFilled: f.fieldsFilled, fieldsLeft: f.fieldsLeft }
-      } else if (path != null) {
-        const abs = await resolveInsideRoot(await getRoot(), path)
-        if (!/\.html?$/i.test(abs)) throw new ToolRefusal(`Refused: ${path} is not an .html or .htm file.`)
-        const info = await stat(abs)
-        if (!info.isFile()) throw new ToolRefusal(`Refused: ${path} is not a regular file.`)
-        if (info.size > MAX_GENERATE_HTML_BYTES) {
-          throw new ToolRefusal(`Refused: ${path} is ${info.size} bytes. Drive opens at most ${MAX_GENERATE_HTML_BYTES} bytes (2 MB) of HTML.`)
-        }
-        doc = decodeUtf8File(new Uint8Array(await readFile(abs)), path)
-      } else doc = html!
+      const { doc, filled } = await readDocument({ html, path, template, fields }, MAX_GENERATE_HTML_BYTES, `Drive opens at most ${MAX_GENERATE_HTML_BYTES} bytes (2 MB) of HTML.`)
       // Local only: never touches the Drive client, so it works without a key and makes no request.
       const link = await buildGenerateLink(doc, { format: format ?? "doc", origin: driveOrigin() })
       const result = {
@@ -702,6 +686,96 @@ server.registerTool(
       // Redaction must never cut into the link: if it would change anything, refuse instead.
       if (redact(text, configuredSecrets()) !== text) throw new ToolRefusal("Refused: the link could not be returned safely. Change the document slightly and try again.")
       return { content: [{ type: "text" as const, text }, { type: "text" as const, text: link.warning ? `${link.warning} ${GENERATE_NEXT}` : GENERATE_NEXT }] }
+    })
+  )
+
+  /** The document's HTML from exactly one of html, path or template (shared by generate and save). */
+  const readDocument = async (
+    a: { html?: string; path?: string; template?: TemplateId; fields?: Record<string, string> },
+    maxFileBytes: number,
+    limitText: string
+  ): Promise<{ doc: string; filled: { template: TemplateId; fieldsFilled: number; fieldsLeft: string[] } | null }> => {
+    if ([a.html, a.path, a.template].filter((v) => v != null).length !== 1) throw new ToolRefusal("Refused: give exactly one of html, path or template.")
+    if (a.fields != null && a.template == null) throw new ToolRefusal("Refused: fields works only with template.")
+    if (a.template != null) {
+      const t = templateById(a.template)
+      if (!t) throw new ToolRefusal(`Refused: template is one of ${TEMPLATE_IDS.join(", ")}.`)
+      const f = fillTemplate(t, a.fields ?? {})
+      return { doc: f.html, filled: { template: t.id, fieldsFilled: f.fieldsFilled, fieldsLeft: f.fieldsLeft } }
+    }
+    if (a.path != null) {
+      const abs = await resolveInsideRoot(await getRoot(), a.path)
+      if (!/\.html?$/i.test(abs)) throw new ToolRefusal(`Refused: ${a.path} is not an .html or .htm file.`)
+      const info = await stat(abs)
+      if (!info.isFile()) throw new ToolRefusal(`Refused: ${a.path} is not a regular file.`)
+      if (info.size > maxFileBytes) throw new ToolRefusal(`Refused: ${a.path} is ${info.size} bytes. ${limitText}`)
+      return { doc: decodeUtf8File(new Uint8Array(await readFile(abs)), a.path), filled: null }
+    }
+    return { doc: a.html!, filled: null }
+  }
+
+  /** The folder to save into: the one given, or the only top-level folder this key can add files to. */
+  const pickSaveFolder = async (c: UntraceLike, folderId: string | undefined): Promise<string> => {
+    if (folderId) return folderId
+    const writable: { folderId: string; name: string }[] = []
+    let cursor: string | null = null
+    for (let i = 0; i < 5; i++) {
+      const r = await c.folders.list({ parentId: null, cursor, limit: 200 })
+      for (const f of r.folders) if (f.role === "owner" || f.role === "admin" || f.role === "editor") writable.push({ folderId: f.folderId, name: f.name })
+      cursor = r.nextCursor
+      if (!cursor) break
+    }
+    if (writable.length === 1) return writable[0]!.folderId
+    if (writable.length === 0) {
+      throw new ToolRefusal(
+        "Refused: this key was not added to any folder it can add files to. Ask the owner to give the agent a folder with write access in Drive (Settings > Developer > Give your agent access), or make one with untrace_create_folder, then pass its folderId."
+      )
+    }
+    const list = writable.slice(0, 20).map((f) => `${f.name} (${f.folderId})`).join(", ")
+    throw new ToolRefusal(`Refused: this key can add files to ${writable.length} folders. Pass folderId, one of: ${list}.`)
+  }
+
+  server.registerTool(
+    "untrace_save_document",
+    {
+      title: "Save an HTML document to Drive as a PDF",
+      description: SAVE_DESCRIPTION,
+      inputSchema: {
+        html: z.string().min(1).max(4 * MAX_SAVE_HTML_BYTES).optional().describe("The HTML document (a full page or a fragment), when neither path nor template is given. At most 256 KB of UTF-8."),
+        path: z.string().min(1).optional().describe("A local .html or .htm file, relative to the allowed folder (UNTRACE_MCP_ROOT). Not available on a remote server."),
+        template: z.enum(TEMPLATE_IDS).optional().describe("Start from one of Drive's templates instead of html or path: mutual-nda, invoice, proposal-quote, letter or meeting-minutes."),
+        fields: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe(`Only with template: field name (as written inside the brackets) to value. At most ${MAX_FIELDS} fields, ${MAX_FIELD_VALUE_CHARS} characters each.`),
+        name: nameSchema.optional().describe("The file name in Drive. .pdf is added. Default: the first heading, else Untitled document."),
+        paper: z.enum(PAPER_IDS).optional().default("a4").describe("Paper size: a4 (default, 210 x 297 mm), letter (8.5 x 11 in) or legal (8.5 x 14 in)."),
+        folderId: uuid.optional().describe("The folder to save into. This key needs role editor or admin there. Leave out when the key can add files to exactly one top-level folder."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    run(async (a: { html?: string; path?: string; template?: TemplateId; fields?: Record<string, string>; name?: string; paper?: PaperId; folderId?: string }) => {
+      const { doc, filled } = await readDocument(a, MAX_SAVE_HTML_BYTES, `untrace_save_document takes at most ${MAX_SAVE_HTML_BYTES} bytes (256 KB) of HTML. Split it into parts and save each part with its own name.`)
+      // Render first: an over-long document is refused before any request is made.
+      const pdf = await buildDocumentPdf(doc, { name: a.name, paper: a.paper ?? "a4" })
+      const c = getClient()
+      const folderId = await pickSaveFolder(c, a.folderId)
+      const r = await c.files.upload({ folderId, data: pdf.bytes, name: pdf.name, mime: "application/pdf" })
+      const file = clean(r.file) as { fileId: string; name: string; folderId?: string | null; size?: number }
+      const result = {
+        fileId: file.fileId,
+        name: file.name,
+        folderId: file.folderId ?? folderId,
+        pages: pdf.pages,
+        paper: a.paper ?? "a4",
+        size: file.size ?? pdf.bytes.length,
+        htmlBytes: pdf.htmlBytes,
+        url: driveFileUrl(driveOrigin(c.baseUrl), file.fileId, file.folderId ?? folderId),
+        metering: r.metering,
+        ...(pdf.warnings.length ? { warnings: pdf.warnings } : {}),
+        ...(filled ? { template: filled.template, fieldsLeft: filled.fieldsLeft } : {}),
+      }
+      return { content: [ok(result).content[0]!, { type: "text" as const, text: SAVE_NEXT }] }
     })
   )
 

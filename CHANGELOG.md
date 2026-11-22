@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `untrace_save_document`: takes an HTML document (`html`, a local `.html`/`.htm` file at `path`,
+  or a `template` with `fields`), makes a PDF from it on this machine and uploads it into a Drive
+  folder as this server's key (the agent key from `agent init` and `agent claim`, or
+  `UNTRACE_CLIENT_ID`). The PDF is encrypted before it is stored, like any upload. The HTML is read
+  with the rules of Drive's Generate editor and laid out with its print styles: Geist and Geist
+  Mono (bundled under `fonts/`, SIL Open Font License 1.1), A4, US Letter or Legal, page numbers,
+  repeated table header rows, page breaks from `break-before: page`. At most 256 KB of HTML and 10
+  pages; over either limit nothing is uploaded. `folderId` may be left out when the key can add
+  files to exactly one top-level folder. Returns the file id, name, page count and a Drive `url`.
+  New dependencies: `pdf-lib`, `@pdf-lib/fontkit`, `parse5`. See docs/SAVE-DOCUMENT.md.
+
 - `untrace_generate_link`: above about 200 KB (204,800 bytes) of HTML the answer carries a
   `warning` (the link works, but chat apps can cut very long links); more than 2 MiB is still
   refused. The link builder is now a pure module with no Node built-ins
