@@ -38,7 +38,7 @@ import {
 import { z } from "zod"
 
 import { ToolRefusal, toolError } from "./errors"
-import { GENERATE_NEXT, MAX_GENERATE_HTML_BYTES, buildGenerateLink, decodeUtf8File, driveOrigin, type GenerateFormat } from "./generate"
+import { GENERATE_DESCRIPTION, GENERATE_NEXT, MAX_GENERATE_HTML_BYTES, buildGenerateLink, decodeUtf8File, driveOrigin, type GenerateFormat } from "./generate"
 import { MAX_FIELDS, MAX_FIELD_VALUE_CHARS, TEMPLATE_IDS, fillTemplate, templateById, type TemplateId } from "./templates"
 import { FRAMEWORKS, setupGuide } from "./guide"
 import { isSymlink, resolveInsideRoot, resolveRoot } from "./paths"
@@ -652,7 +652,7 @@ server.registerTool(
     "untrace_generate_link",
     {
       title: "Open an HTML document in Drive's editor",
-      description: `Turn an HTML document into a link that opens it in Untrace Drive's editor (/generate), where the person fixes the text, then splits and uploads it as a PDF. The document travels only in the part of the link after #, which browsers never send to a server, so the draft does not reach Untrace until the person uploads it. Give exactly one of html (the document), path (a local .html or .htm file inside the allowed folder) or template (one of Drive's templates: mutual-nda, invoice, proposal-quote, letter, meeting-minutes). With template, fields fills its highlighted [Field] values by name; call once with template alone to get the names in fieldsLeft, then again with fields. Write a self-contained document: headings, paragraphs, lists and tables; inline styles are fine; images only as data: URIs (remote images, fonts and scripts are removed by the editor). At most 2 MB of HTML. format doc (default) compresses it; html does not and fits far less. Works offline and needs no key. The link holds the whole document: give it to the person to open, never post it publicly.`,
+      description: GENERATE_DESCRIPTION,
       inputSchema: {
         html: z.string().min(1).max(4 * MAX_GENERATE_HTML_BYTES).optional().describe("The HTML document, when neither path nor template is given."),
         path: z.string().min(1).optional().describe("A local .html or .htm file, relative to the allowed folder (UNTRACE_MCP_ROOT). Not available on a remote server."),
@@ -689,12 +689,19 @@ server.registerTool(
         doc = decodeUtf8File(new Uint8Array(await readFile(abs)), path)
       } else doc = html!
       // Local only: never touches the Drive client, so it works without a key and makes no request.
-      const link = buildGenerateLink(doc, { format: format ?? "doc", origin: driveOrigin() })
-      const result = { url: link.url, format: link.format, htmlBytes: link.htmlBytes, urlChars: link.urlChars, ...(filled ?? {}) }
+      const link = await buildGenerateLink(doc, { format: format ?? "doc", origin: driveOrigin() })
+      const result = {
+        url: link.url,
+        format: link.format,
+        htmlBytes: link.htmlBytes,
+        urlChars: link.urlChars,
+        ...(link.warning ? { warning: link.warning } : {}),
+        ...(filled ?? {}),
+      }
       const text = JSON.stringify(result, null, 2)
       // Redaction must never cut into the link: if it would change anything, refuse instead.
       if (redact(text, configuredSecrets()) !== text) throw new ToolRefusal("Refused: the link could not be returned safely. Change the document slightly and try again.")
-      return { content: [{ type: "text" as const, text }, { type: "text" as const, text: GENERATE_NEXT }] }
+      return { content: [{ type: "text" as const, text }, { type: "text" as const, text: link.warning ? `${link.warning} ${GENERATE_NEXT}` : GENERATE_NEXT }] }
     })
   )
 

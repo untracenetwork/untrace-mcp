@@ -39,7 +39,8 @@ Output:
 ```
 
 `htmlBytes` is the size of the HTML in UTF-8 bytes. `urlChars` is the length of the whole link.
-With `template`, the output also has `template`, `fieldsFilled` and `fieldsLeft`.
+Above about 200 KB of HTML the output also has `warning` (see [Limits](#limits)). With
+`template`, the output also has `template`, `fieldsFilled` and `fieldsLeft`.
 
 ## Templates
 
@@ -128,8 +129,13 @@ filled.
 
 | Limit | Value | When it is over |
 |---|---|---|
-| Payload after `doc=` or `html=` | 1,500,000 characters | Refused before a link is built. With `html`, the answer says to use `doc` |
 | Decoded HTML | 2 MiB (2,097,152 bytes) of UTF-8 | Refused before a link is built |
+| Payload after `doc=` or `html=` | 1,500,000 characters | Refused before a link is built. With `html`, the answer says to use `doc` |
+| Chat links | about 200 KB (204,800 bytes) of HTML | Not refused. The answer carries `warning`: some chat apps and browsers cut very long links, so open the link in a browser instead of pasting it into a chat |
+
+The first two are Drive's own limits (`lib/generate/fragment.ts` in untrace-drive: `MAX_HTML_BYTES`,
+`MAX_FRAGMENT_CHARS`); Drive shows "That document is too large to open here" past either. The
+third is guidance from Drive's handoff doc, not a limit in code.
 
 Without compression, base64url makes the payload about 4/3 of the HTML size, so `html` stops at
 about 1.1 MB of HTML. Text compresses well with `doc`: a 300 KB, multi-page business plan with
@@ -137,8 +143,24 @@ tables gives a link of about 71,000 characters.
 
 ## What to put in the HTML
 
-A self-contained document: headings, paragraphs, lists and tables. Inline styles are fine. Images
-only as `data:` URIs. The editor removes remote images, fonts and scripts.
+Drive cleans the HTML (DOMPurify with an allowlist, `lib/generate/sanitize.ts`), then the editor
+turns it into its own blocks. What reaches the editor:
+
+- **Kept:** headings `h1` to `h6`, paragraphs, line breaks, bold, italic, underline,
+  strikethrough (`s`, `del`), inline `code`, highlight (`mark`), `sub`, `sup`, bulleted and
+  numbered lists, quotes (`blockquote`), dividers (`hr`), tables with header cells (`th`),
+  `colspan` and `rowspan`.
+- **Flattened to paragraphs:** `div`, `section`, `article`, `header`, `footer`, `main`, `pre`,
+  `figure`, `figcaption`, `caption`. `kbd` and `small` keep their text only.
+- **Removed:** scripts, event handlers (`on...`), `style` and `link` tags, every attribute except
+  `colspan` and `rowspan` (so no `style`, `class`, `id`, `srcset`), `iframe`, `object`, `embed`,
+  forms, `svg`, `math`, `base`, `meta`, media, and anything loaded from another site. Links keep
+  their text and lose their `href`.
+- **Images:** the cleanup lets only `data:image/png|jpeg|gif|webp|avif|bmp` and `blob:` images
+  through, but the editor has no image block yet, so images do not show. Do not rely on them.
+
+A full page (`<html><head>...<body>`) is fine: only the body is used. The PDF is named after the
+first heading. Design with structure, not CSS: the print view sets its own type and spacing.
 
 ## Example
 
@@ -149,6 +171,18 @@ https://drive.untrace.network/generate#doc=s8kwtAvIScyz0c8wtLMpsPNIzcnJ17PRL7ADA
 https://drive.untrace.network/generate#html=PGgxPlBsYW48L2gxPjxwPkhlbGxvLjwvcD4
 ```
 
+From code, with this package's encoder (no Node built-ins, so it also runs in a browser or a
+edge worker):
+
+```js
+import { buildGenerateLink } from "@untracenetwork/mcp/generate"
+
+const { url, warning } = await buildGenerateLink("<h1>Plan</h1><p>Hello.</p>")
+```
+
+`buildGenerateLink(html, { format?, origin? })` resolves to `{ url, format, htmlBytes, urlChars,
+warning? }` and rejects with `GenerateLinkError` past the 2 MiB or 1,500,000-character limit.
+
 Building the same link yourself in Node:
 
 ```js
@@ -157,6 +191,9 @@ import { deflateRawSync } from "node:zlib"
 const html = "<h1>Plan</h1><p>Hello.</p>"
 const url = `https://drive.untrace.network/generate#doc=${deflateRawSync(Buffer.from(html, "utf8")).toString("base64url")}`
 ```
+
+The public guide, with browser and Python versions:
+[untrace.network/docs/generate-links](https://untrace.network/docs/generate-links).
 
 Reading it back in a browser:
 

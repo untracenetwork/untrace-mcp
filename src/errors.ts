@@ -21,6 +21,7 @@ import {
   UntraceUnavailableError,
 } from "@untracenetwork/sdk"
 
+import { GenerateLinkError } from "./generate-link"
 import { PathRefusedError } from "./paths"
 import { configuredSecrets, redact } from "./redact"
 
@@ -46,6 +47,7 @@ const KEY_HELP =
 export function describeError(err: unknown): ToolErrorInfo {
   const raw = err instanceof Error ? err.message : String(err)
   if (err instanceof ToolRefusal) return { code: "refused", message: raw, retryable: false }
+  if (err instanceof GenerateLinkError) return { code: "refused", message: raw, retryable: false }
   if (err instanceof PathRefusedError) return { code: "path_refused", message: raw, retryable: false }
 
   if (err instanceof UntracePlannedError) {

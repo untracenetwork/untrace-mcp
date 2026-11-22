@@ -384,10 +384,12 @@ link, fix the text in Drive's editor, then press Split & Upload to save it as a 
   never send that part to a server, so Untrace does not receive the draft until you upload it.
 - **Local only.** The tool makes no request and needs no developer key.
 - **Not logged.** The document and the link are never written to a log.
-- **Self-contained HTML.** Headings, paragraphs, lists and tables. Inline styles are fine. Images
-  only as `data:` URIs: the editor removes remote images, fonts and scripts.
-- **Size.** At most 2 MB of HTML. The default format, `doc`, compresses it; `html` does not and
-  fits far less.
+- **Structure, not CSS.** Headings, paragraphs, lists, quotes and tables (with `colspan` and
+  `rowspan`). The editor removes scripts, styles, every attribute except `colspan` and `rowspan`,
+  and anything loaded from another site. Images do not show in the editor yet.
+- **Size.** More than 2 MB of HTML is refused. Above about 200 KB the answer carries a
+  `warning`: the link works, but some chat apps cut very long links, so open it in a browser.
+  The default format, `doc`, compresses; `html` does not and fits far less.
 - **Templates.** Start from the same templates as Drive's editor: `mutual-nda`, `invoice`,
   `proposal-quote`, `letter`, `meeting-minutes`. `fields` fills the highlighted values by name;
   the answer lists what is still left in `fieldsLeft`.
@@ -396,7 +398,8 @@ link, fix the text in Drive's editor, then press Split & Upload to save it as a 
 Try it: "Write a one-page business plan for my bakery and open it in Untrace Drive." Or: "Make a
 mutual NDA between my company and Acme Ltd and open it in Untrace Drive."
 
-Templates, wire format and limits: [docs/GENERATE.md](docs/GENERATE.md).
+Templates, wire format and limits: [docs/GENERATE.md](docs/GENERATE.md). Build the link without
+this server: [untrace.network/docs/generate-links](https://untrace.network/docs/generate-links).
 
 ## Set up the Drive SDK in your app
 

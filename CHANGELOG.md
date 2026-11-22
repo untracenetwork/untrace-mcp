@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `untrace_generate_link`: above about 200 KB (204,800 bytes) of HTML the answer carries a
+  `warning` (the link works, but chat apps can cut very long links); more than 2 MiB is still
+  refused. The link builder is now a pure module with no Node built-ins
+  (`CompressionStream("deflate-raw")`, `btoa`), exported as `@untracenetwork/mcp/generate`, so a
+  browser or an edge worker can import it. `buildGenerateLink` is now async and rejects with
+  `GenerateLinkError`. The tool description carries the whole public guide (limits, what the
+  editor keeps and removes, how to build the link by hand), matching
+  https://untrace.network/docs/generate-links. Corrected: inline styles and images do not survive
+  the editor's cleanup.
 - `untrace_generate_link` templates: `template` (`mutual-nda`, `invoice`, `proposal-quote`,
   `letter`, `meeting-minutes`) starts from the same templates as Drive's editor, byte for byte (the
   NDA is Common Paper Mutual NDA 1.0, CC BY 4.0, credit line kept). `fields` fills them: each value

@@ -12,7 +12,9 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { UntraceClient } from "@untracenetwork/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { MAX_GENERATE_HTML_BYTES, MAX_GENERATE_PAYLOAD_CHARS, buildGenerateLink, encodeGeneratePayload } from "../src/generate"
+import { readFileSync } from "node:fs"
+
+import { CHAT_LINK_WARN_HTML_BYTES, GENERATE_DESCRIPTION, GenerateLinkError, MAX_GENERATE_HTML_BYTES, MAX_GENERATE_PAYLOAD_CHARS, buildGenerateLink, encodeGeneratePayload } from "../src/generate"
 import { createServer, type UntraceLike } from "../src/server"
 import { harness } from "./helpers"
 import { BASE, CLIENT_ID, SECRET, createMockDrive } from "./mock-drive"
@@ -147,10 +149,10 @@ describe("untrace_generate_link: round trip", () => {
     expect(r.content[1]!.text).toMatch(/Open the url in a browser.*nothing is uploaded until the person presses Split & Upload/)
   })
 
-  it("the 300 KB plan compresses to a short link", () => {
+  it("the 300 KB plan compresses to a short link", async () => {
     expect(PLAN.length).toBeGreaterThan(290_000)
-    const doc = buildGenerateLink(PLAN, { format: "doc", origin: "https://drive.untrace.network" })
-    const plain = buildGenerateLink(PLAN, { format: "html", origin: "https://drive.untrace.network" })
+    const doc = await buildGenerateLink(PLAN, { format: "doc", origin: "https://drive.untrace.network" })
+    const plain = await buildGenerateLink(PLAN, { format: "html", origin: "https://drive.untrace.network" })
     expect(doc.urlChars).toBeLessThan(plain.urlChars / 2)
     expect(doc.urlChars).toBeLessThan(MAX_GENERATE_PAYLOAD_CHARS / 10)
   })
@@ -164,10 +166,10 @@ describe("untrace_generate_link: round trip", () => {
     expect(same((await decodeLink(url)).bytes, utf8(ASCII))).toBe(true)
   })
 
-  it("payload alphabet: only A-Z a-z 0-9 _ - for every length mod 3", () => {
+  it("payload alphabet: only A-Z a-z 0-9 _ - for every length mod 3", async () => {
     for (let n = 1; n <= 12; n++) {
       for (const f of ["doc", "html"] as const) {
-        const p = encodeGeneratePayload(utf8("é".repeat(n) + "?>~".repeat(n)), f)
+        const p = await encodeGeneratePayload(utf8("é".repeat(n) + "?>~".repeat(n)), f)
         expect(p).toMatch(/^[A-Za-z0-9_-]+$/)
       }
     }
@@ -177,45 +179,48 @@ describe("untrace_generate_link: round trip", () => {
 describe("untrace_generate_link: limits", () => {
   const O = "https://drive.untrace.network"
 
-  it("2 MiB of HTML passes in doc format; one byte more is refused", () => {
+  it("2 MiB of HTML passes in doc format; one byte more is refused", async () => {
+    expect(MAX_GENERATE_HTML_BYTES).toBe(2_097_152) // Drive: lib/generate/fragment.ts MAX_HTML_BYTES
     const pad = (n: number) => `<p>${"a".repeat(n - 7)}</p>`
-    const ok = buildGenerateLink(pad(MAX_GENERATE_HTML_BYTES), { format: "doc", origin: O })
+    const ok = await buildGenerateLink(pad(MAX_GENERATE_HTML_BYTES), { format: "doc", origin: O })
     expect(ok.htmlBytes).toBe(MAX_GENERATE_HTML_BYTES)
-    expect(() => buildGenerateLink(pad(MAX_GENERATE_HTML_BYTES + 1), { format: "doc", origin: O })).toThrow(/2097153 bytes.*at most 2097152 bytes \(2 MB\)/)
+    const over = buildGenerateLink(pad(MAX_GENERATE_HTML_BYTES + 1), { format: "doc", origin: O })
+    await expect(over).rejects.toBeInstanceOf(GenerateLinkError)
+    await expect(buildGenerateLink(pad(MAX_GENERATE_HTML_BYTES + 1), { format: "doc", origin: O })).rejects.toThrow(/2097153 bytes.*at most 2097152 bytes \(2 MB\)/)
   })
 
-  it("the 2 MiB cap counts UTF-8 bytes, not characters", () => {
+  it("the 2 MiB cap counts UTF-8 bytes, not characters", async () => {
     const arabic = "م".repeat(MAX_GENERATE_HTML_BYTES / 2) // 2 bytes each: exactly 2 MiB
-    expect(buildGenerateLink(arabic, { format: "doc", origin: O }).htmlBytes).toBe(MAX_GENERATE_HTML_BYTES)
-    expect(() => buildGenerateLink(`${arabic}x`, { format: "doc", origin: O })).toThrow(/at most 2097152 bytes/)
+    expect((await buildGenerateLink(arabic, { format: "doc", origin: O })).htmlBytes).toBe(MAX_GENERATE_HTML_BYTES)
+    await expect(buildGenerateLink(`${arabic}x`, { format: "doc", origin: O })).rejects.toThrow(/at most 2097152 bytes/)
   })
 
-  it("html format: 1,500,000 payload characters pass, 1,500,002 are refused and point to doc", () => {
+  it("html format: 1,500,000 payload characters pass, 1,500,002 are refused and point to doc", async () => {
     const atCap = (MAX_GENERATE_PAYLOAD_CHARS / 4) * 3 // 1,125,000 bytes -> exactly 1,500,000 characters
-    const ok = buildGenerateLink("a".repeat(atCap), { format: "html", origin: O })
+    const ok = await buildGenerateLink("a".repeat(atCap), { format: "html", origin: O })
     expect(ok.url.length - `${O}/generate#html=`.length).toBe(MAX_GENERATE_PAYLOAD_CHARS)
-    expect(() => buildGenerateLink("a".repeat(atCap + 1), { format: "html", origin: O })).toThrow(/1500002 characters.*at most 1500000.*Use format "doc"/)
+    await expect(buildGenerateLink("a".repeat(atCap + 1), { format: "html", origin: O })).rejects.toThrow(/1500002 characters.*at most 1500000.*Use format "doc"/)
     // The same document fits easily as doc.
-    expect(buildGenerateLink("a".repeat(atCap + 1), { format: "doc", origin: O }).urlChars).toBeLessThan(10_000)
+    expect((await buildGenerateLink("a".repeat(atCap + 1), { format: "doc", origin: O })).urlChars).toBeLessThan(10_000)
   })
 
-  it("doc format: a payload just under 1,500,000 characters passes, the next one is refused", () => {
+  it("doc format: a payload just under 1,500,000 characters passes, the next one is refused", async () => {
     const text = noise(1_700_000)
-    const len = (n: number) => encodeGeneratePayload(utf8(text.slice(0, n)), "doc").length
-    expect(len(text.length)).toBeGreaterThan(MAX_GENERATE_PAYLOAD_CHARS)
+    const len = async (n: number) => (await encodeGeneratePayload(utf8(text.slice(0, n)), "doc")).length
+    expect(await len(text.length)).toBeGreaterThan(MAX_GENERATE_PAYLOAD_CHARS)
     // Find n where n fits and n + 1 does not.
     let lo = 1_000_000
     let hi = text.length
-    expect(len(lo)).toBeLessThanOrEqual(MAX_GENERATE_PAYLOAD_CHARS)
+    expect(await len(lo)).toBeLessThanOrEqual(MAX_GENERATE_PAYLOAD_CHARS)
     while (hi - lo > 1) {
       const mid = Math.floor((lo + hi) / 2)
-      if (len(mid) <= MAX_GENERATE_PAYLOAD_CHARS) lo = mid
+      if ((await len(mid)) <= MAX_GENERATE_PAYLOAD_CHARS) lo = mid
       else hi = mid
     }
-    const ok = buildGenerateLink(text.slice(0, lo), { format: "doc", origin: O })
+    const ok = await buildGenerateLink(text.slice(0, lo), { format: "doc", origin: O })
     expect(ok.url.length - `${O}/generate#doc=`.length).toBeLessThanOrEqual(MAX_GENERATE_PAYLOAD_CHARS)
     expect(ok.htmlBytes).toBeLessThan(MAX_GENERATE_HTML_BYTES)
-    expect(() => buildGenerateLink(text.slice(0, hi), { format: "doc", origin: O })).toThrow(/at most 1500000\. Even compressed it is too long/)
+    await expect(buildGenerateLink(text.slice(0, hi), { format: "doc", origin: O })).rejects.toThrow(/at most 1500000\. Even compressed it is too long/)
   })
 
   it("a refusal through the tool never repeats the document", async () => {
@@ -374,5 +379,72 @@ describe("untrace_generate_link: no network, no key, nothing logged", () => {
       const payload = url.split("=")[1]!
       expect(all).not.toContain(payload.slice(0, 64))
     }
+  })
+})
+
+describe("untrace_generate_link: chat-link warning above about 200 KB", () => {
+  const O = "https://drive.untrace.network"
+  const pad = (n: number) => `<p>${"a".repeat(n - 7)}</p>`
+
+  it("200 KiB of HTML has no warning; one byte more warns but still builds the link", async () => {
+    expect(CHAT_LINK_WARN_HTML_BYTES).toBe(204_800)
+    const at = await buildGenerateLink(pad(CHAT_LINK_WARN_HTML_BYTES), { origin: O })
+    expect(at.warning).toBeUndefined()
+    expect("warning" in at).toBe(false)
+    const over = await buildGenerateLink(pad(CHAT_LINK_WARN_HTML_BYTES + 1), { origin: O })
+    expect(over.url.startsWith(`${O}/generate#doc=`)).toBe(true)
+    expect(over.warning).toMatch(/^The HTML is 204801 bytes \(about 200 KB\), over about 200 KB\. The link works, but some chat apps and browsers cut very long links/)
+    expect(same((await decodeLink(over.url)).bytes, utf8(pad(CHAT_LINK_WARN_HTML_BYTES + 1)))).toBe(true)
+  })
+
+  it("through the tool: the warning is in the answer, not a refusal, and small documents carry none", async () => {
+    h = await harness()
+    const small = await h.call("untrace_generate_link", { html: ASCII })
+    expect(JSON.parse(small.content[0]!.text!).warning).toBeUndefined()
+    const r = await h.call("untrace_generate_link", { html: PLAN })
+    expect(r.isError).toBe(false)
+    const out = JSON.parse(r.content[0]!.text!)
+    expect(out.htmlBytes).toBeGreaterThan(CHAT_LINK_WARN_HTML_BYTES)
+    expect(out.warning).toMatch(/some chat apps and browsers cut very long links/)
+    expect(r.content[1]!.text).toMatch(/^The HTML is \d+ bytes .*Open the url in a browser/)
+    expect(same((await decodeLink(out.url)).bytes, utf8(PLAN))).toBe(true)
+  })
+})
+
+describe("untrace_generate_link: portable encoder and public guide", () => {
+  it("src/generate-link.ts imports nothing and uses no Node-only API, so it runs in a Worker", () => {
+    const src = readFileSync(new URL("../src/generate-link.ts", import.meta.url), "utf8")
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")
+    expect(code).not.toMatch(/^\s*import\s/m)
+    expect(code).not.toMatch(/\brequire\(|node:|\bBuffer\b|\bprocess\b|zlib/)
+    expect(code).toMatch(/new CompressionStream\("deflate-raw"\)/)
+  })
+
+  it("the tool description carries the whole guide: limits, what survives, how to build the link", async () => {
+    h = await harness()
+    const { tools } = await h.mcp.listTools()
+    const d = tools.find((t) => t.name === "untrace_generate_link")!.description!
+    expect(d).toBe(GENERATE_DESCRIPTION)
+    for (const must of [
+      "need no sign-in",
+      "Split & Upload",
+      "browsers never send to a server",
+      "2,097,152 bytes",
+      "1,500,000 characters",
+      "about 200 KB",
+      "headings h1 to h6",
+      "tables with header cells (th), colspan and rowspan",
+      "the editor has no image block yet",
+      "scripts, event handlers",
+      "style and link tags",
+      "every attribute except colspan and rowspan",
+      "anything loaded from another site",
+      "lose their href",
+      'CompressionStream("deflate-raw")',
+      "zlib.compressobj(9, zlib.DEFLATED, -15)",
+      "#html=",
+      "https://untrace.network/docs/generate-links",
+    ]) expect(d).toContain(must)
+    expect(d).not.toMatch(/inline styles are fine|\u2014|we never see/i)
   })
 })
