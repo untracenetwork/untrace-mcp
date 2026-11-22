@@ -38,6 +38,8 @@ import {
 import { z } from "zod"
 
 import { ToolRefusal, toolError } from "./errors"
+import { GENERATE_DESCRIPTION, GENERATE_NEXT, MAX_GENERATE_HTML_BYTES, buildGenerateLink, decodeUtf8File, driveOrigin, type GenerateFormat } from "./generate"
+import { MAX_FIELDS, MAX_FIELD_VALUE_CHARS, TEMPLATE_IDS, fillTemplate, templateById, type TemplateId } from "./templates"
 import { FRAMEWORKS, setupGuide } from "./guide"
 import { isSymlink, resolveInsideRoot, resolveRoot } from "./paths"
 import { configuredSecrets, redact, redactExcept, rememberSecretValue } from "./redact"
@@ -126,6 +128,7 @@ export const TOOL_NAMES = [
   "untrace_remove_key",
   "untrace_whoami",
   "untrace_setup_guide",
+  "untrace_generate_link",
   "untrace_secret_set",
   "untrace_secret_get",
   "untrace_secret_list",
@@ -211,6 +214,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         "Sharing with a person: untrace_share offers a file or folder to their Untrace username; they accept by attaching their OWN key. Nobody can attach a key in someone else's name. The owner can never be removed or demoted.",
         "Credentials are set in this server's environment. Never ask the user for the client secret in chat. Deleting a file, trashing a folder or removing a key needs confirm: true after the user agrees.",
         "Developers adding Untrace to their own app: call untrace_setup_guide once the stack is known.",
+        "To hand the user a document to edit in Drive (a plan, a report, a letter), write it as HTML and call untrace_generate_link, or pass template (mutual-nda, invoice, proposal-quote, letter, meeting-minutes) and its fields; give them the link and do not post it anywhere public.",
         "Secrets (API keys, tokens, passwords): when the user gives you one, store it with untrace_secret_set instead of keeping it in the chat, and read it back with untrace_secret_get only when a task needs it. Never print a secret value in the chat unless the user explicitly asks to see it.",
       ].join(" "),
     }
@@ -641,6 +645,63 @@ server.registerTool(
     },
     async ({ framework, includeReference }: { framework: (typeof FRAMEWORKS)[number]; includeReference?: boolean }) => ({
       content: [{ type: "text" as const, text: setupGuide(framework, includeReference ?? true) }],
+    })
+  )
+
+  server.registerTool(
+    "untrace_generate_link",
+    {
+      title: "Open an HTML document in Drive's editor",
+      description: GENERATE_DESCRIPTION,
+      inputSchema: {
+        html: z.string().min(1).max(4 * MAX_GENERATE_HTML_BYTES).optional().describe("The HTML document, when neither path nor template is given."),
+        path: z.string().min(1).optional().describe("A local .html or .htm file, relative to the allowed folder (UNTRACE_MCP_ROOT). Not available on a remote server."),
+        format: z.enum(["doc", "html"]).optional().default("doc").describe("doc (default): compressed, fits far more. html: plain base64url, only for small documents."),
+        template: z.enum(TEMPLATE_IDS).optional().describe("Start from one of Drive's templates instead of html or path: mutual-nda, invoice, proposal-quote, letter or meeting-minutes."),
+        fields: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe(
+            `Only with template. Field name (as written inside the brackets, for example "Party 1 company") to value. Each value replaces every copy of that field, as plain text, no longer highlighted. An empty value leaves the field highlighted. At most ${MAX_FIELDS} fields, ${MAX_FIELD_VALUE_CHARS} characters each.`
+          ),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    run(async ({ html, path, format, template, fields }: { html?: string; path?: string; format?: GenerateFormat; template?: TemplateId; fields?: Record<string, string> }) => {
+      if ([html, path, template].filter((v) => v != null).length !== 1) throw new ToolRefusal("Refused: give exactly one of html, path or template.")
+      if (fields != null && template == null) throw new ToolRefusal("Refused: fields works only with template.")
+      let doc: string
+      let filled: { template: TemplateId; fieldsFilled: number; fieldsLeft: string[] } | null = null
+      if (template != null) {
+        const t = templateById(template)
+        if (!t) throw new ToolRefusal(`Refused: template is one of ${TEMPLATE_IDS.join(", ")}.`)
+        const f = fillTemplate(t, fields ?? {})
+        doc = f.html
+        filled = { template: t.id, fieldsFilled: f.fieldsFilled, fieldsLeft: f.fieldsLeft }
+      } else if (path != null) {
+        const abs = await resolveInsideRoot(await getRoot(), path)
+        if (!/\.html?$/i.test(abs)) throw new ToolRefusal(`Refused: ${path} is not an .html or .htm file.`)
+        const info = await stat(abs)
+        if (!info.isFile()) throw new ToolRefusal(`Refused: ${path} is not a regular file.`)
+        if (info.size > MAX_GENERATE_HTML_BYTES) {
+          throw new ToolRefusal(`Refused: ${path} is ${info.size} bytes. Drive opens at most ${MAX_GENERATE_HTML_BYTES} bytes (2 MB) of HTML.`)
+        }
+        doc = decodeUtf8File(new Uint8Array(await readFile(abs)), path)
+      } else doc = html!
+      // Local only: never touches the Drive client, so it works without a key and makes no request.
+      const link = await buildGenerateLink(doc, { format: format ?? "doc", origin: driveOrigin() })
+      const result = {
+        url: link.url,
+        format: link.format,
+        htmlBytes: link.htmlBytes,
+        urlChars: link.urlChars,
+        ...(link.warning ? { warning: link.warning } : {}),
+        ...(filled ?? {}),
+      }
+      const text = JSON.stringify(result, null, 2)
+      // Redaction must never cut into the link: if it would change anything, refuse instead.
+      if (redact(text, configuredSecrets()) !== text) throw new ToolRefusal("Refused: the link could not be returned safely. Change the document slightly and try again.")
+      return { content: [{ type: "text" as const, text }, { type: "text" as const, text: link.warning ? `${link.warning} ${GENERATE_NEXT}` : GENERATE_NEXT }] }
     })
   )
 

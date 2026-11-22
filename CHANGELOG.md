@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- `untrace_generate_link`: above about 200 KB (204,800 bytes) of HTML the answer carries a
+  `warning` (the link works, but chat apps can cut very long links); more than 2 MiB is still
+  refused. The link builder is now a pure module with no Node built-ins
+  (`CompressionStream("deflate-raw")`, `btoa`), exported as `@untracenetwork/mcp/generate`, so a
+  browser or an edge worker can import it. `buildGenerateLink` is now async and rejects with
+  `GenerateLinkError`. The tool description carries the whole public guide (limits, what the
+  editor keeps and removes, how to build the link by hand), matching
+  https://untrace.network/docs/generate-links. Corrected: inline styles and images do not survive
+  the editor's cleanup.
+- `untrace_generate_link` templates: `template` (`mutual-nda`, `invoice`, `proposal-quote`,
+  `letter`, `meeting-minutes`) starts from the same templates as Drive's editor, byte for byte (the
+  NDA is Common Paper Mutual NDA 1.0, CC BY 4.0, credit line kept). `fields` fills them: each value
+  replaces every `<mark>[Name]</mark>` of its field as escaped plain text; an empty value leaves the
+  field highlighted; unknown names are refused; at most 200 fields of 2,000 characters. The answer
+  adds `template`, `fieldsFilled` and `fieldsLeft`. Give exactly one of `html`, `path` or
+  `template`. A refusal never repeats a value.
+- `untrace_generate_link`: turns an HTML document (`html`, or a local `.html`/`.htm` file at
+  `path`) into a link that opens it in Drive's editor at `/generate`. The document travels in the
+  URL fragment (`#doc=` deflate-raw + base64url, or `#html=`), so no server receives the draft. No
+  request, no key needed, nothing logged. At most 2 MiB of HTML and 1,500,000 payload characters.
+  See docs/GENERATE.md.
 - Connected project: `agent claim --project aiteam.space` (or `UNTRACE_AGENT_PROJECT`, the flag
   wins) names the project the agent works for. It is sent as `project` and signed into the claim as
   a `project:` line, the same as Drive. Only `aiteam.space` is accepted; anything else is refused

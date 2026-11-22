@@ -14,6 +14,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./generate": {
+      "types": "./dist/generate-link.d.ts",
+      "default": "./dist/generate-link.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

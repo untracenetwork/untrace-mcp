@@ -28,6 +28,8 @@ automatically before build, typecheck and test. `src/generated/` is not committe
   only file allowed a crypto primitive: it derives the agent key's Ed25519 sign key, which the SDK
   does not export, to sign the pairing code. `store.ts` is the keychain / 0600 file store.
 - `src/redact.ts`: secret redaction applied to every result, error and log line.
+- `src/generate.ts`: `untrace_generate_link`, the Drive editor link (docs/GENERATE.md). Local
+  only: it never calls the Drive client.
 - `src/guide.ts`, `guide/sdk-readme.md`: `untrace_setup_guide`. `guide/sdk-readme.md` is the
   untrace-sdk README without its "How ... works" internals notes and with the secret shown as a
   placeholder. Refresh it when the SDK README changes.

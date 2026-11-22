@@ -7,4 +7,17 @@ export { createHttpApp, listen, MCP_PATH, DEFAULT_REDIRECT_URIS, ACCESS_TOKEN_TT
 export { redact } from "./redact"
 export { describeError, ToolRefusal } from "./errors"
 export { setupGuide, FRAMEWORKS, type Framework } from "./guide"
+export {
+  buildGenerateLink,
+  chatLinkWarning,
+  GenerateLinkError,
+  CHAT_LINK_WARN_HTML_BYTES,
+  MAX_GENERATE_HTML_BYTES,
+  MAX_GENERATE_PAYLOAD_CHARS,
+  GENERATE_DESCRIPTION,
+  GENERATE_GUIDE_URL,
+  type GenerateFormat,
+  type GenerateLink,
+} from "./generate"
+export { GENERATE_TEMPLATES, TEMPLATE_IDS, fillTemplate, templateById, templateFields, MAX_FIELDS, MAX_FIELD_VALUE_CHARS, type GenerateTemplate, type TemplateId, type FilledTemplate } from "./templates"
 export { VERSION } from "./version"

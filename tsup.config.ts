@@ -1,9 +1,9 @@
 import { defineConfig } from "tsup"
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/cli.ts"],
+  entry: ["src/index.ts", "src/cli.ts", "src/generate-link.ts"],
   format: ["esm"],
-  dts: { entry: "src/index.ts" },
+  dts: { entry: ["src/index.ts", "src/generate-link.ts"] },
   clean: true,
   sourcemap: false,
   target: "node20",

@@ -57,7 +57,7 @@ async function stdio(): Promise<void> {
   const agent = await loadAgentCredentials()
   if (agent) log(`untrace-mcp: using the agent key ${agent} from this machine`)
   if (!process.env.UNTRACE_CLIENT_ID || !process.env.UNTRACE_CLIENT_SECRET) {
-    log("untrace-mcp: UNTRACE_CLIENT_ID / UNTRACE_CLIENT_SECRET are not set. File tools will answer with setup help; untrace_setup_guide works.")
+    log("untrace-mcp: UNTRACE_CLIENT_ID / UNTRACE_CLIENT_SECRET are not set. File tools will answer with setup help; untrace_setup_guide and untrace_generate_link work.")
   }
   const server = createServer()
   await server.connect(new StdioServerTransport())
