@@ -290,6 +290,7 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8787/mcp wit
 | `untrace_whoami` | This key's client id, Drive, scopes and public key. Never the secret | nothing |
 | `untrace_setup_guide` | Step-by-step instructions, with code, for adding the Drive SDK to a Next.js, Node.js, React or Vue app. Works offline, no key needed | nothing |
 | `untrace_generate_link` | Turn an HTML document (`html`, a local `.html` file at `path`, or one of Drive's templates at `template`, with its `fields` filled) into a link that opens it in Drive's editor. Local only: no request, no key needed. See [Generate a document in Drive](#generate-a-document-in-drive) | nothing |
+| `untrace_save_document` | Turn an HTML document (`html`, a local `.html` file at `path`, or a `template` with `fields`) into a PDF on this machine and save it into a Drive folder. At most 256 KB of HTML and 10 pages. See [Save a document to Drive](#save-a-document-to-drive) | scope `upload`, editor or admin |
 | `untrace_secret_set` | Keep a secret (an API key, token or password) under a `name` in this key's own vault. Encrypted on this machine. Setting it again adds a new version. `shared: true` (or `id`) writes a new version into a secret shared with this key, same owner only. Never sends the value back | scope `upload` |
 | `untrace_secret_get` | Read the newest value of a secret in this key's own vault; `shared: true` (or `id`) for one shared with it | scope `download` |
 | `untrace_secret_list` | This key's own secrets, by name, with version and date; `includeShared: true` adds the shared ones, marked `shared`. Never the values | any role |
@@ -400,6 +401,30 @@ mutual NDA between my company and Acme Ltd and open it in Untrace Drive."
 
 Templates, wire format and limits: [docs/GENERATE.md](docs/GENERATE.md). Build the link without
 this server: [untrace.network/docs/generate-links](https://untrace.network/docs/generate-links).
+
+## Save a document to Drive
+
+Ask your agent for a finished document and have it saved straight to your Drive as a PDF. The
+agent writes the document as HTML and calls `untrace_save_document`. This server makes the PDF;
+the agent does not.
+
+- **Same look as Drive.** The HTML is read with the rules of Drive's Generate editor and laid out
+  with its print styles: Geist fonts, A4 (default), US Letter or Legal, page numbers.
+- **Encrypted before it is stored.** The PDF is made on the machine running this server, then
+  uploaded with the SDK like any other file, as this server's key (the agent key from
+  `agent init` and `agent claim`, or `UNTRACE_CLIENT_ID`).
+- **Where it goes.** Into `folderId`, or into the only top-level folder the key can add files to.
+  The key needs the `upload` scope and role `editor` or `admin` there.
+- **Limits.** At most 256 KB of HTML and 10 pages. Over either limit nothing is saved: split the
+  document into parts and save each part with its own name.
+- **What is kept.** Headings, paragraphs, bold, italic, underline, strikethrough, inline code,
+  highlight, lists, quotes, dividers, tables (with `colspan` and `rowspan`) and page breaks
+  (`style="break-before: page"`). Images, scripts, styles and other attributes are removed.
+- **The answer.** The file id, its name, the page count and a `url` that opens it in Drive.
+
+Try it: "Write a one-page business plan for my bakery and save it to my Untrace Drive."
+
+Mapping, layout and fonts: [docs/SAVE-DOCUMENT.md](docs/SAVE-DOCUMENT.md).
 
 ## Set up the Drive SDK in your app
 

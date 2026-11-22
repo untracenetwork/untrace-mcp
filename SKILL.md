@@ -48,6 +48,7 @@ Useful examples:
 - "Share the Contracts folder with username alice-legal as viewer."
 - "Keep my OpenAI key in Untrace as openai, then share it with my build agent."
 - "Write a one-page business plan and open it in Untrace Drive so I can edit it."
+- "Write the meeting minutes and save them to my Untrace Drive as a PDF."
 - "Guide me through adding Untrace to my Next.js app without exposing the client secret."
 
 Rules:
@@ -57,6 +58,7 @@ Rules:
 - Deleting a file, trashing a folder or removing a key needs `confirm: true`. Ask the user first.
 - Sharing with a person is an offer: they accept with their own key.
 - To hand the user a document to edit, write it as self-contained HTML and call `untrace_generate_link`. Give them the link; it holds the whole document, so never post it publicly. Nothing is uploaded until they press Split & Upload in Drive. If the answer has a `warning` (over about 200 KB of HTML), tell them to open the link in a browser rather than paste it into a chat.
+- To save a finished document to the user's Drive, write it as HTML and call `untrace_save_document`. Do not build a PDF yourself: the server makes it. At most 256 KB of HTML and 10 pages; split a longer document into parts and save each part with its own name. Give the user the file name and the `url` from the answer.
 - When the user gives you an API key or token, keep it with `untrace_secret_set` and read it with `untrace_secret_get` only when a task needs it. Never print a secret value in chat unless the user explicitly asks. `untrace_secret_share` gives it to another key of the same owner.
 
 ## Keep context small
