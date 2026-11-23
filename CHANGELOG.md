@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Hosted connector: `worker/` is a Cloudflare Worker that serves `untrace_generate_link` (no
+  `path` input) and `untrace_setup_guide` over stateless MCP Streamable HTTP at
+  `https://mcp.untrace.network/mcp`, with `GET /health`. No sign-in, no key, no storage, no logs;
+  60 requests a minute per IP address, request bodies up to 2.5 MB. Tools that reach a Drive are
+  not hosted. The tools' schemas and handlers moved to `src/keyless.ts`, shared by the package and
+  the Worker, so both answer the same for the same input. The npm package's contents do not
+  change. See worker/README.md.
 - `untrace_save_document`: takes an HTML document (`html`, a local `.html`/`.htm` file at `path`,
   or a `template` with `fields`), makes a PDF from it on this machine and uploads it into a Drive
   folder as this server's key (the agent key from `agent init` and `agent claim`, or

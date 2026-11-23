@@ -5,7 +5,7 @@
  * A field to fill in is written `<mark>[Field name]</mark>`; the editor shows it highlighted.
  * fillTemplate replaces a field with its value, HTML-escaped and no longer highlighted.
  */
-import { ToolRefusal } from "../errors"
+import { ToolRefusal } from "../refusal"
 import { INVOICE_HTML } from "./invoice"
 import { LETTER_HTML } from "./letter"
 import { MEETING_MINUTES_HTML } from "./meeting-minutes"

@@ -1,0 +1,28 @@
+# The hosted Untrace MCP server. See README.md in this folder.
+# No account id, no zone, no storage bindings, no secrets.
+# Deploy from the repo root: npx wrangler@4 deploy --config worker/wrangler.toml
+name = "untrace-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-11-20"
+workers_dev = false
+
+# Add the custom domain at deploy time (README.md, "Add the domain"), or uncomment:
+# routes = [{ pattern = "mcp.untrace.network", custom_domain = true }]
+
+# untrace_setup_guide embeds the SDK guide (src/generated/guide.ts, not committed): build it first.
+# Wrangler runs this in the folder it was started from: run wrangler from the repo root.
+[build]
+command = "node scripts/embed-guide.mjs"
+
+# Per IP address: 60 requests a minute in each Cloudflare location (src/mcp.ts RATE_LIMIT_PER_MINUTE).
+# namespace_id is any integer not used by another rate limiter in the same account.
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "2611"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
+[observability]
+enabled = false
