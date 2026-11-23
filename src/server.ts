@@ -38,10 +38,11 @@ import {
 import { z } from "zod"
 
 import { ToolRefusal, toolError } from "./errors"
-import { GENERATE_DESCRIPTION, GENERATE_NEXT, MAX_GENERATE_HTML_BYTES, buildGenerateLink, decodeUtf8File, driveOrigin, type GenerateFormat } from "./generate"
-import { MAX_FIELDS, MAX_FIELD_VALUE_CHARS, TEMPLATE_IDS, fillTemplate, templateById, type TemplateId } from "./templates"
+import { MAX_GENERATE_HTML_BYTES, decodeUtf8File, driveOrigin, type GenerateFormat } from "./generate"
+import { SETUP_GUIDE_TOOL, generateLinkResult, generateLinkTool, readDocumentInput, setupGuideResult, type FilledFields } from "./keyless"
+import { MAX_FIELDS, MAX_FIELD_VALUE_CHARS, TEMPLATE_IDS, type TemplateId } from "./templates"
 import { MAX_SAVE_HTML_BYTES, PAPER_IDS, SAVE_DESCRIPTION, SAVE_NEXT, buildDocumentPdf, driveFileUrl, type PaperId } from "./save-document"
-import { FRAMEWORKS, setupGuide } from "./guide"
+import { FRAMEWORKS } from "./guide"
 import { isSymlink, resolveInsideRoot, resolveRoot } from "./paths"
 import { configuredSecrets, redact, redactExcept, rememberSecretValue } from "./redact"
 import { MAX_SECRET_BYTES, Vault, validateSecretName } from "./secrets"
@@ -636,83 +637,34 @@ server.registerTool(
 
   server.registerTool(
     "untrace_setup_guide",
-    {
-      title: "Set up the Drive SDK in an app",
-      description:
-        "Return step-by-step instructions, with code, for adding Untrace Drive to a developer's own Next.js, Node.js, React or Vue app with the @untracenetwork packages. Works offline and needs no key.",
-      inputSchema: {
-        framework: z.enum(FRAMEWORKS).describe("nextjs, node, react or vue."),
-        includeReference: z.boolean().optional().default(true).describe("Also include the scopes, roles and errors reference. Default true."),
-      },
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    async ({ framework, includeReference }: { framework: (typeof FRAMEWORKS)[number]; includeReference?: boolean }) => ({
-      content: [{ type: "text" as const, text: setupGuide(framework, includeReference ?? true) }],
-    })
+    SETUP_GUIDE_TOOL,
+    async ({ framework, includeReference }: { framework: (typeof FRAMEWORKS)[number]; includeReference?: boolean }) => setupGuideResult({ framework, includeReference })
   )
 
+  // The same tool as the hosted Worker (src/keyless.ts), plus the local-only path input.
   server.registerTool(
     "untrace_generate_link",
-    {
-      title: "Open an HTML document in Drive's editor",
-      description: GENERATE_DESCRIPTION,
-      inputSchema: {
-        html: z.string().min(1).max(4 * MAX_GENERATE_HTML_BYTES).optional().describe("The HTML document, when neither path nor template is given."),
-        path: z.string().min(1).optional().describe("A local .html or .htm file, relative to the allowed folder (UNTRACE_MCP_ROOT). Not available on a remote server."),
-        format: z.enum(["doc", "html"]).optional().default("doc").describe("doc (default): compressed, fits far more. html: plain base64url, only for small documents."),
-        template: z.enum(TEMPLATE_IDS).optional().describe("Start from one of Drive's templates instead of html or path: mutual-nda, invoice, proposal-quote, letter or meeting-minutes."),
-        fields: z
-          .record(z.string(), z.string())
-          .optional()
-          .describe(
-            `Only with template. Field name (as written inside the brackets, for example "Party 1 company") to value. Each value replaces every copy of that field, as plain text, no longer highlighted. An empty value leaves the field highlighted. At most ${MAX_FIELDS} fields, ${MAX_FIELD_VALUE_CHARS} characters each.`
-          ),
-      },
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
+    generateLinkTool("local"),
     run(async ({ html, path, format, template, fields }: { html?: string; path?: string; format?: GenerateFormat; template?: TemplateId; fields?: Record<string, string> }) => {
       const { doc, filled } = await readDocument({ html, path, template, fields }, MAX_GENERATE_HTML_BYTES, `Drive opens at most ${MAX_GENERATE_HTML_BYTES} bytes (2 MB) of HTML.`)
-      // Local only: never touches the Drive client, so it works without a key and makes no request.
-      const link = await buildGenerateLink(doc, { format: format ?? "doc", origin: driveOrigin() })
-      const result = {
-        url: link.url,
-        format: link.format,
-        htmlBytes: link.htmlBytes,
-        urlChars: link.urlChars,
-        ...(link.warning ? { warning: link.warning } : {}),
-        ...(filled ?? {}),
-      }
-      const text = JSON.stringify(result, null, 2)
-      // Redaction must never cut into the link: if it would change anything, refuse instead.
-      if (redact(text, configuredSecrets()) !== text) throw new ToolRefusal("Refused: the link could not be returned safely. Change the document slightly and try again.")
-      return { content: [{ type: "text" as const, text }, { type: "text" as const, text: link.warning ? `${link.warning} ${GENERATE_NEXT}` : GENERATE_NEXT }] }
+      return generateLinkResult(doc, filled, { format: format ?? "doc", origin: driveOrigin(), redact: (t) => redact(t, configuredSecrets()) })
     })
   )
 
   /** The document's HTML from exactly one of html, path or template (shared by generate and save). */
-  const readDocument = async (
+  const readDocument = (
     a: { html?: string; path?: string; template?: TemplateId; fields?: Record<string, string> },
     maxFileBytes: number,
     limitText: string
-  ): Promise<{ doc: string; filled: { template: TemplateId; fieldsFilled: number; fieldsLeft: string[] } | null }> => {
-    if ([a.html, a.path, a.template].filter((v) => v != null).length !== 1) throw new ToolRefusal("Refused: give exactly one of html, path or template.")
-    if (a.fields != null && a.template == null) throw new ToolRefusal("Refused: fields works only with template.")
-    if (a.template != null) {
-      const t = templateById(a.template)
-      if (!t) throw new ToolRefusal(`Refused: template is one of ${TEMPLATE_IDS.join(", ")}.`)
-      const f = fillTemplate(t, a.fields ?? {})
-      return { doc: f.html, filled: { template: t.id, fieldsFilled: f.fieldsFilled, fieldsLeft: f.fieldsLeft } }
-    }
-    if (a.path != null) {
-      const abs = await resolveInsideRoot(await getRoot(), a.path)
-      if (!/\.html?$/i.test(abs)) throw new ToolRefusal(`Refused: ${a.path} is not an .html or .htm file.`)
+  ): Promise<{ doc: string; filled: FilledFields | null }> =>
+    readDocumentInput(a, async (path) => {
+      const abs = await resolveInsideRoot(await getRoot(), path)
+      if (!/\.html?$/i.test(abs)) throw new ToolRefusal(`Refused: ${path} is not an .html or .htm file.`)
       const info = await stat(abs)
-      if (!info.isFile()) throw new ToolRefusal(`Refused: ${a.path} is not a regular file.`)
-      if (info.size > maxFileBytes) throw new ToolRefusal(`Refused: ${a.path} is ${info.size} bytes. ${limitText}`)
-      return { doc: decodeUtf8File(new Uint8Array(await readFile(abs)), a.path), filled: null }
-    }
-    return { doc: a.html!, filled: null }
-  }
+      if (!info.isFile()) throw new ToolRefusal(`Refused: ${path} is not a regular file.`)
+      if (info.size > maxFileBytes) throw new ToolRefusal(`Refused: ${path} is ${info.size} bytes. ${limitText}`)
+      return decodeUtf8File(new Uint8Array(await readFile(abs)), path)
+    })
 
   /** The folder to save into: the one given, or the only top-level folder this key can add files to. */
   const pickSaveFolder = async (c: UntraceLike, folderId: string | undefined): Promise<string> => {

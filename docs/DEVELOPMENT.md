@@ -30,6 +30,11 @@ automatically before build, typecheck and test. `src/generated/` is not committe
 - `src/redact.ts`: secret redaction applied to every result, error and log line.
 - `src/generate.ts`: `untrace_generate_link`, the Drive editor link (docs/GENERATE.md). Local
   only: it never calls the Drive client.
+- `src/keyless.ts`: the schemas and handlers of the two tools that need no key
+  (`untrace_generate_link`, `untrace_setup_guide`), shared by `src/server.ts` and the Worker. No
+  Node built-ins: the package passes in the local file reader.
+- `worker/`: the hosted connector, a Cloudflare Worker (worker/README.md). Not part of the npm
+  package; tests in `test/worker.test.ts`.
 - `src/guide.ts`, `guide/sdk-readme.md`: `untrace_setup_guide`. `guide/sdk-readme.md` is the
   untrace-sdk README without its "How ... works" internals notes and with the secret shown as a
   placeholder. Refresh it when the SDK README changes.

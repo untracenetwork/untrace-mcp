@@ -3,6 +3,7 @@ dist/
 src/generated/
 *.tsbuildinfo
 coverage/
+.wrangler/
 .env*
 *.tgz
 !ci/vendor/*.tgz

@@ -24,14 +24,9 @@ import {
 import { GenerateLinkError } from "./generate-link"
 import { PathRefusedError } from "./paths"
 import { configuredSecrets, redact } from "./redact"
+import { ToolRefusal } from "./refusal"
 
-/** A refusal raised by this server before any SDK call (bad input, missing confirm, ...). */
-export class ToolRefusal extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "ToolRefusal"
-  }
-}
+export { ToolRefusal }
 
 export interface ToolErrorInfo {
   /** Short machine-readable code. */

@@ -448,6 +448,15 @@ The client secret stays on your server (`UNTRACE_CLIENT_ID`, `UNTRACE_CLIENT_SEC
 
 Full SDK docs for agents: https://untrace.network/llms.txt
 
+## Hosted connector (no key)
+
+`https://mcp.untrace.network/mcp` serves the two tools that need no key, `untrace_generate_link`
+and `untrace_setup_guide`, to anyone, with no sign-in. Add it to Claude as a custom connector
+(Settings > Connectors > Add custom connector) and leave Advanced settings empty. It has no `path`
+input and stores nothing. The tools that reach your Drive are not hosted: a shared server would
+have to hold your developer key, so run this package with your own key for those. Deploy steps,
+limits and checks: [worker/README.md](worker/README.md).
+
 ## Development
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Releases: [docs/RELEASING.md](docs/RELEASING.md).
